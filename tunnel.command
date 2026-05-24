@@ -1,0 +1,16 @@
+#!/bin/bash
+cd "$(dirname "$0")"
+echo "Running DB migrations..."
+docker compose exec -T app python -m alembic upgrade head && echo "Migrations done!" || echo "Migrations may have already run."
+echo ""
+echo "Seeding initial data..."
+docker compose exec -T app python -m scripts.seed 2>/dev/null && echo "Seed done!" || echo "Seed skipped (already seeded)."
+echo ""
+echo "Starting public tunnel..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Look for: https://xxxx.trycloudflare.com"
+echo "  Your webhook URL will be: <that-url>/api/v1/webhook/instagram"
+echo "  Verify token: fc13fb44381927ce2cfc225ad0849ebb470eede5"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+cloudflared tunnel --url http://localhost:8000

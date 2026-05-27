@@ -40,17 +40,26 @@ async def webhook_receive(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    logger.info("webhook_event_received", object_type=data.get("object"))
+    logger.info(
+        "webhook_event_received",
+        object_type=data.get("object"),
+        raw_payload=str(data)[:500],   # full debug — remove once stable
+    )
 
     # Process each entry
     for entry in data.get("entry", []):
+        entry_keys = list(entry.keys())
+        logger.info("webhook_entry_keys", keys=entry_keys)
+
         # DM events
         for messaging in entry.get("messaging", []):
             await _handle_messaging_event(messaging)
 
-        # Comment events (feed subscription)
+        # Comment / feed events
         for change in entry.get("changes", []):
-            if change.get("field") == "feed":
+            field = change.get("field")
+            logger.info("webhook_change_field", field=field, value_keys=list(change.get("value", {}).keys()))
+            if field in ("comments", "feed"):
                 await _handle_comment_event(change.get("value", {}))
 
     # Always return 200 quickly — Meta will retry if we don't
@@ -67,6 +76,12 @@ async def _handle_messaging_event(messaging: dict):
 
     sender_id = sender.get("id")
     if not sender_id:
+        return
+
+    # Skip echo events — when the bot sends a DM, Instagram echoes it back
+    # with is_echo=true or with a recipient matching the sender pattern.
+    if message.get("is_echo"):
+        logger.info("dm_echo_skipped", sender_id=sender_id)
         return
 
     # Deduplicate using the Instagram message ID (mid) — Meta can deliver duplicates
@@ -107,26 +122,42 @@ async def _handle_messaging_event(messaging: dict):
 
 
 async def _handle_comment_event(value: dict):
-    """Analyze comment intent and optionally send a DM."""
+    """
+    Auto-DM every commenter with the owner-configured greeting template.
+
+    No Gemini classification — all comments trigger the DM (deduped per user/post).
+    The owner controls the message text via the 'comment_auto_dm_message' setting.
+    """
     from app.services.redis_client import get_redis
-    from app.tasks.message_processing import process_dm
+    from app.tasks.message_processing import process_comment_dm
 
-    comment_text = value.get("message", "")
     sender_id = value.get("from", {}).get("id")
-    sender_name = value.get("from", {}).get("name")
-    post_id = value.get("post_id") or value.get("parent_id", "")
+    # Meta sends "username" in comment events (not "name")
+    sender_name = value.get("from", {}).get("name") or value.get("from", {}).get("username")
+    post_id = value.get("post_id") or value.get("media_id") or value.get("parent_id", "")
+    comment_id = value.get("id")  # comment ID for public reply
 
-    if not sender_id or not comment_text:
+    logger.info(
+        "comment_event_parsed",
+        sender_id=sender_id,
+        sender_name=sender_name,
+        comment_id=comment_id,
+        post_id=post_id,
+        value_preview=str(value)[:200],
+    )
+
+    if not sender_id:
         return
 
-    # Dedup: one DM per user per post
     redis = await get_redis()
+
+    # Dedup: send at most one auto-DM per user per post per day
     dedup_key = f"comment_dm_sent:{sender_id}:{post_id}"
     if await redis.exists(dedup_key):
         logger.info("comment_dm_skipped_dedup", sender_id=sender_id)
         return
 
-    # Check if user already has an active conversation
+    # Skip if this user already has an active conversation with us
     from app.database import AsyncSessionLocal
     from app.models import Conversation
     from sqlalchemy import select
@@ -138,46 +169,18 @@ async def _handle_comment_event(value: dict):
                 Conversation.status == "active",
             ).limit(1)
         )
-        existing = result.scalar_one_or_none()
-        if existing:
+        if result.scalar_one_or_none():
             logger.info("comment_dm_skipped_active_conv", sender_id=sender_id)
             return
 
-    # Use Gemini to classify comment intent
-    from app.services.ai_engine import _call_gemini_text
-    import json
-
-    classify_prompt = f"""Analyze this Instagram comment and determine if it shows purchase intent or a product question.
-Comment: "{comment_text}"
-
-Respond ONLY with JSON: {{"relevant": true/false, "reason": "brief reason"}}"""
-
-    try:
-        raw = await _call_gemini_text(classify_prompt)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            lines = raw.splitlines()
-            raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        result_json = json.loads(raw)
-        is_relevant = result_json.get("relevant", False)
-    except Exception as exc:
-        logger.warning("comment_classify_failed", error=str(exc))
-        is_relevant = False
-
-    if not is_relevant:
-        logger.info("comment_irrelevant", sender_id=sender_id)
-        return
-
-    # Mark dedup before sending (expire in 24h)
+    # Mark dedup NOW (before task runs) so concurrent webhook deliveries don't double-send
     await redis.set(dedup_key, "1", ex=86400)
 
-    logger.info("comment_dm_sending", sender_id=sender_id)
+    logger.info("comment_dm_queued", sender_id=sender_id, sender_name=sender_name)
 
-    # Enqueue DM task with greeting
-    process_dm.delay(
-        instagram_user_id=sender_id,
-        instagram_username=sender_name,
-        message_text=comment_text,
-        media_url=None,
-        source="comment",
+    # Offload to Celery — keeps the webhook response fast
+    process_comment_dm.delay(
+        sender_id=sender_id,
+        sender_name=sender_name,
+        comment_id=comment_id,
     )

@@ -71,6 +71,29 @@ const SECTIONS: Section[] = [
       { key: 'offline_message', label: 'Offline Message', isTextarea: true, placeholder: 'We are offline right now, will reply soon…' },
       { key: 'fallback_message_uz', label: 'Fallback Message (UZ)', isTextarea: true },
       { key: 'fallback_message_ru', label: 'Fallback Message (RU)', isTextarea: true },
+      {
+        key: 'dm_greeting_message',
+        label: 'First DM Greeting (sent to new users before AI takes over)',
+        isTextarea: true,
+        placeholder: 'Assalomu alaykum! 👋 Qanday yordam bera olaman?',
+      },
+      {
+        key: 'comment_auto_dm_enabled',
+        label: 'Comment Auto-DM Enabled (true / false)',
+        placeholder: 'true',
+      },
+      {
+        key: 'comment_reply_message',
+        label: "Public Comment Reply (posted under the comment, use {name} for commenter's name)",
+        isTextarea: true,
+        placeholder: "Salom, {name}! 😊 DM ga yozib qoldingiz — tez orada javob beramiz! 🌿",
+      },
+      {
+        key: 'comment_auto_dm_message',
+        label: "Comment Auto-DM Message (use {name} for commenter’s name)",
+        isTextarea: true,
+        placeholder: "Salom, {name}! 👋 Izohingiz uchun rahmat. Savolingiz bo'lsa yozing! 😊",
+      },
     ],
   },
 ]

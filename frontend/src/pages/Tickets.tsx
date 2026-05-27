@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Ticket, ExternalLink } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 
 import { ticketsApi } from '../lib/api'
 import type { OrderStatus } from '../types'
+import type { Ticket as TicketType } from '../types'
 import Card from '../components/ui/Card'
 import Badge, { orderStatusBadge, paymentStatusBadge } from '../components/ui/Badge'
 import Pagination from '../components/ui/Pagination'
@@ -12,7 +13,8 @@ import EmptyState from '../components/ui/EmptyState'
 import { SkeletonRow } from '../components/ui/Spinner'
 import Select from '../components/ui/Select'
 import Modal from '../components/ui/Modal'
-import type { Ticket as TicketType } from '../types'
+import Button from '../components/ui/Button'
+import { useToast } from '../contexts/ToastContext'
 
 const ORDER_STATUS_OPTIONS = [
   { value: '', label: 'All statuses' },
@@ -20,6 +22,12 @@ const ORDER_STATUS_OPTIONS = [
   { value: 'in_progress', label: 'In Progress' },
   { value: 'completed', label: 'Completed' },
   { value: 'cancelled', label: 'Cancelled' },
+]
+
+const STATUS_ACTIONS: { status: OrderStatus; label: string; variant: 'primary' | 'secondary' | 'danger' }[] = [
+  { status: 'in_progress', label: '✋ Take', variant: 'secondary' },
+  { status: 'completed', label: '✅ Complete', variant: 'primary' },
+  { status: 'cancelled', label: '❌ Cancel', variant: 'danger' },
 ]
 
 function fmtCurrency(n: number) {
@@ -129,15 +137,43 @@ export default function Tickets() {
 
       {/* Detail modal */}
       {selected && (
-        <TicketDetailModal ticket={selected} onClose={() => setSelected(null)} />
+        <TicketDetailModal
+          ticket={selected}
+          onClose={() => setSelected(null)}
+          onStatusChange={(updated) => setSelected(updated)}
+        />
       )}
     </div>
   )
 }
 
-function TicketDetailModal({ ticket: t, onClose }: { ticket: TicketType; onClose: () => void }) {
+function TicketDetailModal({
+  ticket: t,
+  onClose,
+  onStatusChange,
+}: {
+  ticket: TicketType
+  onClose: () => void
+  onStatusChange: (updated: TicketType) => void
+}) {
+  const qc = useQueryClient()
+  const { toast } = useToast()
   const orderBadge = orderStatusBadge(t.order_status)
   const payBadge = paymentStatusBadge(t.payment_status)
+
+  const statusMutation = useMutation({
+    mutationFn: (newStatus: OrderStatus) => ticketsApi.updateStatus(t.id, newStatus),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+      onStatusChange(updated)
+      toast.success(`Order status updated to "${updated.order_status.replace('_', ' ')}"`)
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  // Which action buttons to show based on current status
+  const availableActions = STATUS_ACTIONS.filter((a) => a.status !== t.order_status)
+  const isTerminal = t.order_status === 'completed' || t.order_status === 'cancelled'
 
   return (
     <Modal open onClose={onClose} title={`Ticket #${t.ticket_number}`} size="lg">
@@ -152,14 +188,14 @@ function TicketDetailModal({ ticket: t, onClose }: { ticket: TicketType; onClose
         <Section title="Order">
           <Row label="Product" value={t.product_name} />
           <Row label="Quantity" value={String(t.product_quantity)} />
-          <Row label="Total" value={`${new Intl.NumberFormat('uz-UZ').format(t.total_amount)} UZS`} />
+          <Row label="Total" value={`${fmtCurrency(t.total_amount)} UZS`} />
           <Row label="Payment Method" value={t.payment_method === 'transfer' ? 'Bank Transfer' : 'Cash on Delivery'} />
         </Section>
         <Section title="Payment">
           <Row label="Status" value={<Badge variant={payBadge.variant} dot size="sm">{payBadge.label}</Badge>} />
           {t.payment_transaction_id && <Row label="Transaction ID" value={t.payment_transaction_id} />}
           {t.payment_amount_verified != null && (
-            <Row label="Verified Amount" value={`${new Intl.NumberFormat('uz-UZ').format(t.payment_amount_verified)} UZS`} />
+            <Row label="Verified Amount" value={`${fmtCurrency(t.payment_amount_verified)} UZS`} />
           )}
           {t.payment_screenshot_url && (
             <a
@@ -179,6 +215,26 @@ function TicketDetailModal({ ticket: t, onClose }: { ticket: TicketType; onClose
           {t.notes && <Row label="Notes" value={t.notes} />}
         </Section>
       </div>
+
+      {/* Status action buttons */}
+      {!isTerminal && availableActions.length > 0 && (
+        <div className="mt-5 pt-4 border-t border-slate-100">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Update Order Status</p>
+          <div className="flex flex-wrap gap-2">
+            {availableActions.map((action) => (
+              <Button
+                key={action.status}
+                variant={action.variant}
+                size="sm"
+                loading={statusMutation.isPending}
+                onClick={() => statusMutation.mutate(action.status)}
+              >
+                {action.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
     </Modal>
   )
 }

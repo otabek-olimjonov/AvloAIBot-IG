@@ -119,6 +119,27 @@ DEFAULT_SETTINGS = {
     "offline_message": "Assalomu alaykum! Hozir ish soatlaridan tashqaridamiz. Tez orada javob beramiz. / Здравствуйте! Мы сейчас вне рабочего времени. Ответим вам скоро.",
     "fallback_message_uz": "Kechirasiz, hozir texnik nosozlik yuz berdi. Tez orada jamoamiz siz bilan bog'lanadi.",
     "fallback_message_ru": "Извините, произошла техническая ошибка. Наша команда свяжется с вами в ближайшее время.",
+    # --- Comment auto-DM ---
+    # When a user leaves a comment the bot sends this message to their DM automatically.
+    # Use {name} as a placeholder for the commenter's display name.
+    "comment_auto_dm_enabled": "true",
+    # Public reply posted under the comment on the feed. Leave empty to skip.
+    "comment_reply_message": (
+        "Salom, {name}! 😊 DM ga yozib qoldingiz — tez orada javob beramiz! 🌿"
+    ),
+    "comment_auto_dm_message": (
+        "Salom, {name}! 👋 Izohingiz uchun rahmat 🌿\n"
+        "Lavender yostiqlari haqida ko'proq bilmoqchimisiz? "
+        "Sizga batafsil ma'lumot berishdan mamnun bo'lamiz — shunchaki yozing! 😊"
+    ),
+    # --- First DM greeting ---
+    # Sent as the bot's FIRST reply when a new user messages for the first time.
+    # Leave empty ("") to let the AI generate the greeting instead.
+    "dm_greeting_message": (
+        "Assalomu alaykum! 👋 AvloAI botiga xush kelibsiz.\n"
+        "Men sizga Lavender yostiqlari haqida ma'lumot beraman va buyurtma qilishga yordam beraman.\n"
+        "Qanday savol bor? 😊"
+    ),
 }
 
 

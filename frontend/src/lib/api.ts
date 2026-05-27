@@ -119,6 +119,11 @@ export const ticketsApi = {
     return req<Paginated<Ticket>>(`/tickets?${qs}`)
   },
   get: (id: string) => req<Ticket>(`/tickets/${id}`),
+  updateStatus: (id: string, order_status: string, notes?: string) =>
+    req<Ticket>(`/tickets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ order_status, ...(notes !== undefined && { notes }) }),
+    }),
 }
 
 // ─── Settings ──────────────────────────────────────────────────

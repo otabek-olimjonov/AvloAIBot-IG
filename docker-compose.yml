@@ -25,11 +25,32 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-botuser}:${POSTGRES_PASSWORD:-botpassword}@postgres:5432/${POSTGRES_DB:-instagram_bot}
       - REDIS_URL=redis://redis:6379/0
+      - CELERY_WORKER=true
     command: >
       celery -A app.celery_app worker
       --loglevel=info
-      --queues=messages
+      --queues=messages,maintenance
       --concurrency=4
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - botnet
+
+  beat:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-botuser}:${POSTGRES_PASSWORD:-botpassword}@postgres:5432/${POSTGRES_DB:-instagram_bot}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_WORKER=true
+    command: >
+      celery -A app.celery_app beat
+      --loglevel=info
+      --scheduler celery.beat:PersistentScheduler
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,15 +79,11 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=${VITE_API_URL:-}
     restart: unless-stopped
     ports:
-      - "3000:3000"
-    environment:
-      - VITE_API_URL=http://localhost:8000
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    command: npm run dev -- --host 0.0.0.0
+      - "3000:80"
     depends_on:
       - app
     networks:
@@ -116,6 +133,7 @@ services:
       - /var/www/certbot:/var/www/certbot:ro
     depends_on:
       - app
+      - frontend
     networks:
       - botnet
 

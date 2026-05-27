@@ -70,15 +70,68 @@ docker compose exec -T app python -m scripts.seed 2>/dev/null || warn "Seed alre
 
 # ─── Start cloudflared tunnel ─────────────────────────────────────────────────
 info "Starting public tunnel on port 8000..."
+
+# Read the actual verify token from .env so the hint is always correct
+VERIFY_TOKEN=$(grep -E "^META_VERIFY_TOKEN=" .env 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+if [ -z "$VERIFY_TOKEN" ]; then
+  VERIFY_TOKEN="<see META_VERIFY_TOKEN in .env>"
+fi
+
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}  Tunnel starting — look for a line like:              ${NC}"
+echo -e "${YELLOW}  Tunnel starting - look for a line like:              ${NC}"
 echo -e "${YELLOW}  https://xxxx-xxxx.trycloudflare.com                  ${NC}"
 echo -e "${YELLOW}                                                        ${NC}"
-echo -e "${YELLOW}  Copy that URL and paste it into Claude as:            ${NC}"
-echo -e "${YELLOW}  Webhook URL: <that-url>/api/v1/webhook/instagram      ${NC}"
-echo -e "${YELLOW}  Verify token: fc13fb44381927ce2cfc225ad0849ebb470eede5${NC}"
+echo -e "${YELLOW}  Admin panel : <that-url>/                            ${NC}"
+echo -e "${YELLOW}  Webhook URL : <that-url>/api/v1/webhook/instagram    ${NC}"
+echo -e "${YELLOW}  Verify token: ${VERIFY_TOKEN}                        ${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-cloudflared tunnel --url http://localhost:8000
+# Start tunnel in background, capture the URL, then register the Meta webhook subscription
+TUNNEL_LOG=$(mktemp)
+cloudflared tunnel --url http://localhost:80 2>&1 | tee "$TUNNEL_LOG" &
+TUNNEL_PID=$!
+
+# Wait for the public URL to appear
+info "Waiting for tunnel URL..."
+TUNNEL_URL=""
+for i in $(seq 1 30); do
+  TUNNEL_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -1)
+  if [ -n "$TUNNEL_URL" ]; then break; fi
+  sleep 2
+done
+
+if [ -n "$TUNNEL_URL" ]; then
+  WEBHOOK_URL="${TUNNEL_URL}/api/v1/webhook/instagram"
+  log "Tunnel URL: ${TUNNEL_URL}"
+
+  # Read Meta credentials from .env
+  APP_ID=$(grep -E "^META_APP_ID=" .env 2>/dev/null | cut -d= -f2- | tr -d '"')
+  APP_SECRET=$(grep -E "^META_APP_SECRET=" .env 2>/dev/null | cut -d= -f2- | tr -d '"')
+  VERIFY_TOKEN_VAL=$(grep -E "^META_VERIFY_TOKEN=" .env 2>/dev/null | cut -d= -f2- | tr -d '"')
+
+  if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ] && [ -n "$VERIFY_TOKEN_VAL" ]; then
+    info "Registering webhook subscription with Meta..."
+    APP_TOKEN=$(curl -sf "https://graph.facebook.com/oauth/access_token?client_id=${APP_ID}&client_secret=${APP_SECRET}&grant_type=client_credentials" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null)
+    if [ -n "$APP_TOKEN" ]; then
+      RESULT=$(curl -sf -X POST "https://graph.facebook.com/v25.0/${APP_ID}/subscriptions" \
+        -d "object=instagram" \
+        -d "callback_url=${WEBHOOK_URL}" \
+        -d "fields=comments,messages" \
+        -d "verify_token=${VERIFY_TOKEN_VAL}" \
+        -d "access_token=${APP_TOKEN}" 2>/dev/null)
+      if echo "$RESULT" | grep -q '"success":true'; then
+        log "Webhook subscription registered: comments + messages"
+      else
+        warn "Webhook subscription failed: $RESULT"
+      fi
+    else
+      warn "Could not get app access token - register webhook manually"
+    fi
+  else
+    warn "META_APP_ID/APP_SECRET/VERIFY_TOKEN not in .env - skipping auto-subscription"
+  fi
+fi
+
+wait $TUNNEL_PID

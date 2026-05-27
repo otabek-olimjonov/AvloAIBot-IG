@@ -59,5 +59,8 @@ class Settings(BaseSettings):
     ig_daily_message_limit: int = 1000
     ig_daily_warning_threshold: int = 900
 
+    # Set to true temporarily to bypass webhook signature check for debugging
+    skip_webhook_signature: bool = False
+
 
 settings = Settings()

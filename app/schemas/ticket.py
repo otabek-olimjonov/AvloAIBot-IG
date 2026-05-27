@@ -3,6 +3,11 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class TicketStatusUpdate(BaseModel):
+    order_status: str
+    notes: str | None = None
+
+
 class TicketResponse(BaseModel):
     id: uuid.UUID
     ticket_number: int

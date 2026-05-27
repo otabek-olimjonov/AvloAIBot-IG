@@ -137,11 +137,15 @@ async def _call_gemini_text(prompt: str) -> str:
 
 
 def _parse_gemini_response(raw: str) -> dict:
-    """Strip markdown fences if present and parse JSON."""
+    """Strip markdown fences and control characters, then parse JSON."""
+    import re
     text = raw.strip()
+    # Remove markdown code fences if Gemini wraps the JSON
     if text.startswith("```"):
         lines = text.splitlines()
         text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    # Remove ASCII control characters (0x00-0x1F) except tab/newline/CR which are valid in JSON whitespace
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
     return json.loads(text)
 
 

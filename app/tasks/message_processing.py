@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 
 from sqlalchemy import select, update, exists, and_, not_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.celery_app import celery_app
@@ -81,7 +82,26 @@ async def _get_or_create_conversation(
         funnel_stage="greeting",
     )
     db.add(conv)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Another concurrent task already created the active conversation
+        # (unique partial index violation). Roll back and fetch the existing one.
+        await db.rollback()
+        result2 = await db.execute(
+            select(Conversation)
+            .where(
+                Conversation.instagram_user_id == instagram_user_id,
+                Conversation.status == "active",
+            )
+            .order_by(Conversation.started_at.desc())
+            .limit(1)
+        )
+        conv = result2.scalar_one_or_none()
+        if conv is None:
+            raise RuntimeError(
+                f"Could not create or find active conversation for {instagram_user_id}"
+            )
     return conv
 
 

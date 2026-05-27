@@ -654,6 +654,13 @@ async def _poll_comments_async() -> int:
 
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
+            # Resolve the page's own Instagram user ID so we can skip its comments
+            me_resp = await client.get(
+                f"{base}/me",
+                params={"fields": "id", "access_token": access_token},
+            )
+            page_ig_user_id = me_resp.json().get("id") if me_resp.status_code == 200 else None
+
             # Fetch recent posts (last 10)
             media_resp = await client.get(
                 f"{base}/{page_id}/media",
@@ -683,23 +690,22 @@ async def _poll_comments_async() -> int:
                     if not sender_id or not comment_id:
                         continue
 
-                    # Skip if already processed
-                    dedup_key = f"comment_dm_sent:{sender_id}:{post_id}"
-                    if await redis.exists(dedup_key):
+                    # Skip the page's own comments (can't DM yourself)
+                    if sender_id == page_ig_user_id or sender_id == page_id:
+                        logger.debug("comment_poll_skip_own_comment", sender_id=sender_id)
                         continue
 
-                    # Skip if active conversation exists
-                    async with AsyncSessionLocal() as db2:
-                        conv_result = await db2.execute(
-                            select(Conversation).where(
-                                Conversation.instagram_user_id == sender_id,
-                                Conversation.status == "active",
-                            ).limit(1)
+                    # Skip if already processed (dedup key set per user per post, 24h TTL)
+                    dedup_key = f"comment_dm_sent:{sender_id}:{post_id}"
+                    if await redis.exists(dedup_key):
+                        logger.debug(
+                            "comment_poll_skip_dedup",
+                            sender_id=sender_id,
+                            post_id=post_id,
                         )
-                        if conv_result.scalar_one_or_none():
-                            continue
+                        continue
 
-                    # Mark dedup before queuing
+                    # Mark dedup before queuing (prevents double-send on concurrent polls)
                     await redis.set(dedup_key, "1", ex=86400)
 
                     process_comment_dm.delay(

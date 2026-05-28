@@ -17,6 +17,11 @@ celery_app.conf.update(
     enable_utc=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+
+    # ── RedBeat: Redis-backed scheduler (no drift, no stale schedule files) ──
+    beat_scheduler="redbeat.schedulers:RedBeatScheduler",
+    redbeat_redis_url=settings.redis_url,
+
     task_routes={
         "app.tasks.message_processing.process_dm": {"queue": "messages"},
         "app.tasks.message_processing.process_comment_dm": {"queue": "messages"},
@@ -30,7 +35,7 @@ celery_app.conf.update(
             "task": "app.tasks.message_processing.close_stale_conversations",
             "schedule": crontab(minute=0),  # top of every hour
         },
-        # Poll Instagram for new comments every 5 minutes (fallback for dev mode webhook limitation)
+        # Poll Instagram for new comments every 5 minutes
         "poll-new-comments": {
             "task": "app.tasks.message_processing.poll_new_comments",
             "schedule": 300.0,  # every 5 minutes

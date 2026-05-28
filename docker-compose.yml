@@ -50,7 +50,6 @@ services:
     command: >
       celery -A app.celery_app beat
       --loglevel=info
-      --scheduler celery.beat:PersistentScheduler
     depends_on:
       postgres:
         condition: service_healthy

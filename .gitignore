@@ -12,5 +12,3 @@ build/
 postgres_data/
 redis_data/
 *.log
-.env
-*.env

@@ -1,0 +1,173 @@
+# Мингбулоқ тумани ҳокимлигига келган мурожаатлар таҳлили — Промт
+
+---
+
+## Мурожаатлар таҳлили (Og'zaki va Yozma)
+
+# Excel Data Processing Instruction
+
+## Role
+You are an expert in Excel data processing and analysis.
+
+## Task
+You will be given an Excel file. Follow all instructions strictly and produce a new processed Excel file.
+
+---
+
+## Step 1: Open Source File
+- Open the provided Excel file
+- Navigate to the sheet named: **"Лист1"**
+
+---
+
+## Step 2: Identify Required Columns
+Locate the following columns:
+- **Ижрочилар** (Executor)
+- **Бажарилиш ҳолати** (Resolution status)
+- **Топшириқ ҳолати** (Task status)
+- **Кирувчи сана** (Received date)
+
+---
+
+## Step 3: Create New Excel File
+Create a NEW Excel file with the following columns:
+
+1. **Ижрочи** (Executor)
+2. **Жами** (Total)
+3. **Тушунтириш берилди** (Explanation provided)
+4. **Хуқуқий малумот берилди** (Legal explanation provided)
+5. **Ижобий ҳал қилинди** (Resolved positively)
+6. **Ижрода** (In progress)
+7. **Muddati buzilgan** (Overdue — still open)
+8. **Muddati buzilib yopilgan** (Completed overdue)
+
+---
+
+## Step 4: Data Processing
+
+### 4.1 Count Executors
+- Extract all values from **"Ижрочилар"**
+
+- Cells may contain multiple names separated by **newline (`\n`)**, comma, semicolon, or slash. Example:
+  `"J.O.Raximov\nA.B.Abdusalomov\nМингбулоқ туман тиббиёт бирлашмаси"`
+
+- Split each cell into individual parts
+- **Only keep short-format personal names** matching the pattern: `X.X.Surname` (e.g., `J.O.Raximov`, `A.B.Abdusalomov`, `F.M.Egamberdiyeva`)
+- **Ignore** organizational names (long names with spaces, Cyrillic institution names, etc.)
+- Trim spaces for each name
+- Group identical names and count occurrences
+
+Known individual executors include:
+- `J.O.Raximov`
+- `A.B.Abdusalomov`
+- `F.M.Egamberdiyeva`
+- `X.O.Jamoldinov`
+- `U.S.Narmatov`
+- `Sh.S.Xudayberdiyev`
+- `I.I.Ergashev`
+- `N.V.Isaqov`
+
+Write results:
+- Executor name → **Ижрочи**
+- Total count → **Жами**
+
+---
+
+### 4.2 Count by Resolution Status
+For each executor, count occurrences of the following values in **"Бажарилиш ҳолати"** for their rows:
+
+| Source value (exact) | Target column |
+|---|---|
+| `Тушунтириш берилди` | **Тушунтириш берилди** |
+| `Хуқуқий малумот бериш орқалик ҳал қилинган` | **Хуқуқий малумот берилди** |
+| `Ижобий ҳал қилинди` | **Ижобий ҳал қилинди** |
+
+Record counts in the corresponding columns.
+
+---
+
+### 4.3 Handle In-Progress and Overdue Cases
+
+For each row and for each individual executor extracted from **"Ижрочилар"**:
+
+**Check the value in "Топшириқ ҳолати":**
+
+1. If **"Топшириқ ҳолати"** is `Бажарилмоқда` OR `Бажарилмаган`:
+   - Increment **Ижрода** by +1 for that executor
+
+   Then:
+   - Take the date from **"Кирувчи сана"**
+   - Compare it with **today's date**
+   - If the difference is **more than 15 days**:
+     - Increment **Muddati buzilgan** by +1 for that executor
+
+2. If **"Топшириқ ҳолати"** is anything else (e.g., `Бажарилган`, `Муддатидан кеч бажарилган`):
+   - Do NOT count it as in-progress
+   - Do NOT include it in **Muddati buzilgan**
+
+---
+
+### 4.4 Handle Completed Overdue Cases
+
+For each row and for each individual executor extracted from **"Ижрочилар"**:
+
+- If **"Топшириқ ҳолати"** is `Муддатидан кеч бажарилган`:
+  - Increment **Muddati buzilib yopilgan** by +1 for that executor
+
+---
+
+## Step 5: Rules
+- All calculations must be accurate
+- One executor = one row
+- No duplicate rows
+- If a value is missing, write **0**
+- Only individual persons (short name format) are included — no organisations
+
+---
+
+## Step 6: Finalization
+- Sort the table by **Жами** in descending order
+- Save the new Excel file
+
+---
+
+## Step 7: Formatting
+
+### 7.1 Add Title
+- Insert a new top row above the table
+- Merge cells across all columns
+- Add the following text:
+  `"Мингбулоқ тумани ҳокимлигига 2026 йил давомида келиб тушган мурожаатлар таҳлили"`
+- Format: Center aligned, Bold
+
+### 7.2 Add Analysis Date
+- Add one empty row after the table
+- Below it, add:
+  `"Analysis date: [today's date]"`
+- Use current date in standard format (DD-MM-YYYY)
+
+---
+
+## Output
+Return the final processed Excel file.
+
+---
+---
+
+## Хоким қабули таҳлили (Hokim kabuli)
+
+*(Same instructions as above but filter only rows where **"Мурожат тури"** = `Hokim qabuli (Yoshlar)` before processing, and use title: `"Мингбулоқ тумани ҳокими қабулига 2026 йил давомида келиб тушган мурожаатлар таҳлили"`)*
+
+---
+---
+
+## Виртуал мурожаатлар таҳлили (Virtual murojaat)
+
+*(Same instructions as above but filter only rows where **"Мурожат тури"** = `Vertual murojaat` before processing, and use title: `"Мингбулоқ тумани ҳокимлигига 2026 йил давомида келиб тушган виртуал мурожаатлар таҳлили"`)*
+
+---
+---
+
+## Аризалар таҳлили (Ariza)
+
+*(Same instructions as above but filter only rows where **"Мурожат тури"** = `ariza` before processing, and use title: `"Мингбулоқ тумани ҳокимлигига 2026 йил давомида келиб тушган аризалар таҳлили"`)*

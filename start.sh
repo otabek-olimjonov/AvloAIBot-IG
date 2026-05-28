@@ -46,6 +46,10 @@ cd "$(dirname "$0")"
 docker compose up -d --build
 log "All Docker services started."
 
+# Restart nginx after build so it re-resolves container IPs (prevents 502 from stale DNS cache)
+docker compose restart nginx
+log "nginx restarted (fresh DNS for upstream containers)."
+
 # ─── Wait for app to be healthy ───────────────────────────────────────────────
 info "Waiting for the app to be ready on port 8000..."
 for i in $(seq 1 30); do

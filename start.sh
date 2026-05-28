@@ -90,7 +90,7 @@ echo ""
 
 # Start tunnel in background, capture the URL, then register the Meta webhook subscription
 TUNNEL_LOG=$(mktemp)
-cloudflared tunnel --url http://localhost:80 2>&1 | tee "$TUNNEL_LOG" &
+cloudflared tunnel --url http://localhost:80 --protocol http2 2>&1 | tee "$TUNNEL_LOG" &
 TUNNEL_PID=$!
 
 # Wait for the public URL to appear

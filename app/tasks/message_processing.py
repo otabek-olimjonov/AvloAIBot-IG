@@ -560,11 +560,18 @@ async def _process_comment_dm_async(
     # ── 1. Public comment reply ───────────────────────────────────────────────
     reply_template = settings_map.get("comment_reply_message", "").strip()
     if reply_template and comment_id:
-        try:
-            await instagram.reply_to_comment(comment_id, _fill(reply_template))
-            logger.info("comment_public_reply_sent", comment_id=comment_id)
-        except Exception as exc:
-            logger.error("comment_public_reply_failed", comment_id=comment_id, error=str(exc))
+        # Dedup: only post one public reply per comment even if the task is retried
+        reply_dedup_key = f"comment_reply_sent:{comment_id}"
+        already_replied = await redis.exists(reply_dedup_key)
+        if not already_replied:
+            try:
+                await instagram.reply_to_comment(comment_id, _fill(reply_template))
+                await redis.set(reply_dedup_key, "1", ex=86400)
+                logger.info("comment_public_reply_sent", comment_id=comment_id)
+            except Exception as exc:
+                logger.error("comment_public_reply_failed", comment_id=comment_id, error=str(exc))
+        else:
+            logger.debug("comment_public_reply_skipped_dedup", comment_id=comment_id)
 
     # ── 2. DM ─────────────────────────────────────────────────────────────────
     dm_template = settings_map.get("comment_auto_dm_message", "").strip()
@@ -654,12 +661,17 @@ async def _poll_comments_async() -> int:
 
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
-            # Resolve the page's own Instagram user ID so we can skip its comments
+            # Resolve ALL known IDs for this account so we can skip its own comments.
+            # The same account can appear with different IDs depending on API context
+            # (e.g. scoped user ID vs. Instagram Business Account ID in comment threads).
             me_resp = await client.get(
                 f"{base}/me",
                 params={"fields": "id", "access_token": access_token},
             )
             page_ig_user_id = me_resp.json().get("id") if me_resp.status_code == 200 else None
+            # Build a set of all own-account IDs to skip (includes both the /me scoped ID
+            # and the instagram_page_id setting which may differ in comment thread context)
+            own_ids = {id_ for id_ in [page_ig_user_id, page_id] if id_}
 
             # Fetch recent posts (last 10)
             media_resp = await client.get(
@@ -690,10 +702,20 @@ async def _poll_comments_async() -> int:
                     if not sender_id or not comment_id:
                         continue
 
-                    # Skip the page's own comments (can't DM yourself)
-                    if sender_id == page_ig_user_id or sender_id == page_id:
+                    # Skip the page's own comments (can't DM yourself).
+                    # Checks all known own-account IDs (the account may appear with
+                    # different IDs in /me vs. comment thread contexts).
+                    if sender_id in own_ids:
                         logger.debug("comment_poll_skip_own_comment", sender_id=sender_id)
                         continue
+
+                    # Skip if this specific comment was already replied to (covers bot's
+                    # reply-comments that appear with an unexpected account ID variant)
+                    comment_seen_key = f"comment_id_seen:{comment_id}"
+                    if await redis.exists(comment_seen_key):
+                        continue
+                    # Mark this comment as seen immediately (before queuing)
+                    await redis.set(comment_seen_key, "1", ex=86400)
 
                     # Skip if already processed (dedup key set per user per post, 24h TTL)
                     dedup_key = f"comment_dm_sent:{sender_id}:{post_id}"

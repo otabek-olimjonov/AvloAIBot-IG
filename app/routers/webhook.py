@@ -110,11 +110,20 @@ async def _handle_messaging_event(messaging: dict):
     if not message_text and not media_url:
         return
 
-    logger.info("dm_event", sender_id=sender_id, has_media=bool(media_url))
+    # Resolve Instagram username (non-blocking — falls back to None on failure)
+    instagram_username: str | None = None
+    try:
+        from app.services.instagram import get_user_profile
+        profile = await get_user_profile(sender_id)
+        instagram_username = profile.get("username") or profile.get("name") or None
+    except Exception:
+        pass
+
+    logger.info("dm_event", sender_id=sender_id, username=instagram_username, has_media=bool(media_url))
 
     process_dm.delay(
         instagram_user_id=sender_id,
-        instagram_username=None,
+        instagram_username=instagram_username,
         message_text=message_text,
         media_url=media_url,
         source="dm",

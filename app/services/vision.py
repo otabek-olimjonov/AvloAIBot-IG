@@ -12,14 +12,23 @@ logger = get_logger(__name__)
 genai.configure(api_key=settings.gemini_api_key)
 _vision_model = genai.GenerativeModel(settings.gemini_model)
 
-VISION_PROMPT_TEMPLATE = """Analyze this payment screenshot from an Uzbek banking app (Uzcard, Humo, Click, Payme). Extract the following data:
-1. Transaction amount (in UZS)
-2. Transaction ID / receipt number
-3. Date and time of transaction
-4. Sender card number (last 4 digits)
-5. Transaction status (successful / pending / failed)
+VISION_PROMPT_TEMPLATE = """Analyze this payment screenshot from an Uzbek banking app (Uzcard, Humo, Click, Payme, Apelsin, Milliy bank).
+
+Extract the following data:
+1. Transaction amount in UZS (exact number, no spaces/commas)
+2. Transaction ID / receipt number (if visible)
+3. Date and time
+4. Sender card last 4 digits (if visible)
+5. Transaction status (successful/pending/failed)
+6. Recipient card last 4 digits or account (if visible)
 
 Expected payment amount: {expected_amount} UZS
+
+IMPORTANT RULES:
+- amount_matches = true ONLY if amount is within 1% of expected (rounding allowed)
+- If screenshot is blurry or numbers unreadable, set confidence = "low"
+- If this is NOT a payment receipt (just a chat/photo), set confidence = "low" and amount = 0
+- Do NOT set amount_matches=true if the amount is lower than expected
 
 Respond ONLY with valid JSON, no markdown:
 {{
@@ -27,6 +36,7 @@ Respond ONLY with valid JSON, no markdown:
   "transaction_id": "TXN-123456",
   "date": "2026-05-12 14:32",
   "sender_card_last4": "1234",
+  "recipient_card_last4": "5678",
   "status": "successful",
   "amount_matches": true,
   "confidence": "high",
@@ -88,12 +98,22 @@ def determine_payment_action(vision_result: dict) -> tuple[str, str]:
     """
     amount_matches = vision_result.get("amount_matches", False)
     confidence = vision_result.get("confidence", "low")
+    amount = vision_result.get("amount", 0) or 0
+    status = vision_result.get("status", "").lower()
 
+    # Reject if transaction is not successful
+    if status in ("failed", "cancelled", "rejected"):
+        return "pending", "request_resend"
+
+    # Reject if not a screenshot at all
+    if not amount and not vision_result.get("transaction_id"):
+        return "pending", "not_screenshot"
+
+    # Strict: require HIGH confidence AND amount match for auto-confirm
     if amount_matches and confidence == "high":
         return "confirmed", "auto_confirm"
+    # Medium confidence with match: flag for manual review but accept
     elif amount_matches and confidence == "medium":
         return "confirmed", "flag_confirm"
-    elif not vision_result.get("amount") and not vision_result.get("transaction_id"):
-        return "pending", "not_screenshot"
     else:
         return "pending", "request_resend"

@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select, update, exists, and_, not_
 from sqlalchemy.exc import IntegrityError
@@ -61,6 +61,7 @@ async def _get_or_create_conversation(
     instagram_username: str | None,
     source: str,
 ) -> Conversation:
+    # First check for active conversation
     result = await db.execute(
         select(Conversation)
         .where(
@@ -73,6 +74,22 @@ async def _get_or_create_conversation(
     conv = result.scalar_one_or_none()
     if conv:
         return conv
+
+    # Check for recently converted conversation (within 7 days) — client may want to update order
+    cutoff = datetime.utcnow() - timedelta(days=7)
+    result2 = await db.execute(
+        select(Conversation)
+        .where(
+            Conversation.instagram_user_id == instagram_user_id,
+            Conversation.status == "converted",
+            Conversation.started_at >= cutoff,
+        )
+        .order_by(Conversation.started_at.desc())
+        .limit(1)
+    )
+    recent_converted = result2.scalar_one_or_none()
+    if recent_converted:
+        return recent_converted
 
     conv = Conversation(
         instagram_user_id=instagram_user_id,
@@ -111,7 +128,7 @@ async def _load_context(db: AsyncSession) -> dict:
         select(Product).where(Product.is_available == True)
     )
     products = [
-        {"name": p.name, "description": p.description, "price": p.price}
+        {"name": p.name, "description": p.description, "price": p.price, "image_url": p.image_url}
         for p in products_result.scalars().all()
     ]
 
@@ -146,11 +163,17 @@ async def _load_context(db: AsyncSession) -> dict:
         for f in faq_result.scalars().all()
     ]
 
+    tg_link_result = await db.execute(
+        select(Setting.value).where(Setting.key == "telegram_group_link")
+    )
+    telegram_group_link = tg_link_result.scalar_one_or_none() or None
+
     return {
         "products": products,
         "promotions": promotions,
         "prompts": prompts,
         "faq_items": faq_items,
+        "telegram_group_link": telegram_group_link,
     }
 
 
@@ -161,7 +184,7 @@ async def _get_conversation_history(
         select(Message)
         .where(Message.conversation_id == conversation_id)
         .order_by(Message.created_at.desc())
-        .limit(20)
+        .limit(10)
     )
     messages = list(reversed(result.scalars().all()))
     return [{"role": m.role, "content": m.content} for m in messages]
@@ -178,6 +201,51 @@ async def _get_payment_card_info(db: AsyncSession) -> str:
     card_owner = settings_map.get("payment_card_owner", "")
     bank = settings_map.get("payment_bank", "")
     return f"Karta: {card_num} | Egasi: {card_owner} | Bank: {bank}"
+
+
+SUSPICIOUS_WORDS = [
+    # Uzbek offensive/fraud
+    "ot", "essa", "blyad", "xaromi", "harom", "jinni", "ahmoq", "tentak", "yot",
+    "stupid", "idiot", "blyat", "suka", "pizda", "ebal", "nahuy", "huesos",
+    # Fraud/manipulation attempts (Uzbek)
+    "tekin ber", "bepul ber", "tekinga", "bepulga", "aldadingiz", "firibgar",
+    "sotib olmayman lekin", "haq tolamayman", "tolamayman", "pulni qaytaring",
+    # Russian offensive
+    "блять", "сука", "пизда", "хуй", "ебал", "нахуй", "блядь",
+]
+
+FRAUD_PATTERNS = [
+    "to'lov qildim", "tolov qildim", "pul yubordim", "pul jo'natdim",
+    "transfer qildim", "to'lab bo'ldim", "tolab boldim",
+]
+
+
+async def _send_fraud_alert(conv, reason: str) -> None:
+    """Send fraud/suspicious activity alert to Telegram operator group."""
+    from app.services.telegram import send_admin_alert
+    username = conv.instagram_username or conv.instagram_user_id
+    msg = (
+        f"🚨 SHUBHALI FAOLIYAT\n\n"
+        f"👤 Instagram: @{username}\n"
+        f"💬 Sabab: {reason}\n"
+        f"🔗 Suhbat ID: {str(conv.id)[:8]}..."
+    )
+    try:
+        await send_admin_alert(msg)
+    except Exception as exc:
+        logger.error("fraud_alert_send_failed", error=str(exc))
+
+
+def _check_suspicious(text: str) -> tuple[bool, str]:
+    """Returns (is_suspicious, reason). Checks offensive words and fraud patterns."""
+    text_lower = text.lower()
+    for word in SUSPICIOUS_WORDS:
+        if word in text_lower:
+            return True, f"Haqoratli so'z: '{word}'"
+    for pattern in FRAUD_PATTERNS:
+        if pattern in text_lower:
+            return True, f"To'lovsiz tasdiqlashga urinish: '{pattern}'"
+    return False, ""
 
 
 async def _update_pending_ticket(redis, conversation_id: str, extracted_data: dict):
@@ -254,6 +322,129 @@ async def _get_owner_greeting(db: AsyncSession, redis, instagram_user_id: str) -
     return greeting.strip() or None
 
 
+UPDATE_KEYWORDS = [
+    "manzil", "adres", "address", "raqam", "telefon", "phone", "number",
+    "ism", "isim", "name", "o'zgartir", "ozgartir", "yangilash", "yangilamoq",
+    "xato", "noto'g'ri", "notogri", "esdan", "change", "update", "correct",
+]
+
+
+async def _handle_converted_conversation(
+    db: AsyncSession,
+    redis,
+    conv: Conversation,
+    instagram_user_id: str,
+    message_text: str,
+) -> None:
+    """Handle messages in already-converted (ordered) conversations.
+    Detects update requests for name/address/phone and updates the ticket."""
+    from sqlalchemy import select
+    from app.models import Ticket
+
+    text_lower = message_text.lower()
+    is_update_request = any(kw in text_lower for kw in UPDATE_KEYWORDS)
+
+    if not is_update_request:
+        # Generic reply for non-update messages
+        reply = (
+            "✅ Sizning buyurtmangiz qabul qilingan va jarayonda!\n\n"
+            "Agar manzil, ism yoki telefon raqamingizni o'zgartirmoqchi bo'lsangiz — "
+            "yangi ma'lumotni yozing, biz darhol yangilaymiz 📝"
+        )
+        try:
+            await instagram.send_dm(instagram_user_id, reply)
+        except Exception as exc:
+            logger.error("instagram_send_failed", error=str(exc))
+        return
+
+    # Find the linked ticket
+    ticket = None
+    if conv.ticket_id:
+        result = await db.execute(select(Ticket).where(Ticket.id == conv.ticket_id))
+        ticket = result.scalar_one_or_none()
+
+    if not ticket:
+        reply = "✅ Buyurtmangiz topilmadi. Iltimos operator bilan bog'laning."
+        try:
+            await instagram.send_dm(instagram_user_id, reply)
+        except Exception as exc:
+            logger.error("instagram_send_failed", error=str(exc))
+        return
+
+    # Use AI to extract the new data from the message
+    update_prompt = f"""The customer wants to update their order details. Extract updated info from their message.
+Customer message: "{message_text}"
+Current order: name={ticket.client_name}, phone={ticket.client_phone}, city={ticket.client_city}, address={ticket.client_address}
+
+Respond ONLY with valid JSON:
+{{"client_name": null, "client_phone": null, "client_city": null, "client_address": null}}
+Only include fields the customer is explicitly changing. Use null for unchanged fields."""
+
+    updated_fields = {}
+    try:
+        import google.generativeai as genai
+        from app.config import settings as _settings
+        genai.configure(api_key=_settings.gemini_api_key)
+        model = genai.GenerativeModel(_settings.gemini_model)
+        resp = await asyncio.to_thread(model.generate_content, update_prompt)
+        import re, json as _json
+        raw = resp.text.strip()
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        raw = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', raw)
+        extracted = _json.loads(raw)
+        updated_fields = {k: v for k, v in extracted.items() if v is not None}
+    except Exception as exc:
+        logger.error("order_update_ai_failed", error=str(exc))
+
+    if not updated_fields:
+        reply = (
+            "Yangilash uchun quyidagilarni yozing:\n"
+            "• Yangi manzil\n• Yangi telefon raqam\n• Yangi ism"
+        )
+        try:
+            await instagram.send_dm(instagram_user_id, reply)
+        except Exception:
+            pass
+        return
+
+    # Apply updates to ticket
+    for field, value in updated_fields.items():
+        if hasattr(ticket, field):
+            setattr(ticket, field, value)
+    ticket.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(ticket)
+
+    # Notify Telegram
+    from app.services.telegram import edit_ticket_message, send_admin_alert
+    changes_text = "\n".join(f"• {k.replace('client_', '').capitalize()}: {v}" for k, v in updated_fields.items())
+    await send_admin_alert(
+        f"📝 BUYURTMA YANGILANDI\n\n"
+        f"👤 @{conv.instagram_username or conv.instagram_user_id}\n"
+        f"🎫 #{ticket.ticket_number:05d}\n\n"
+        f"Yangi ma'lumotlar:\n{changes_text}"
+    )
+    if ticket.telegram_message_id:
+        try:
+            await edit_ticket_message(ticket.telegram_message_id, ticket)
+        except Exception:
+            pass
+
+    # Confirm to client
+    changes_readable = "\n".join(f"✅ {k.replace('client_', '').capitalize()}: {v}" for k, v in updated_fields.items())
+    reply = (
+        f"✅ Buyurtmangiz ma'lumotlari yangilandi!\n\n"
+        f"{changes_readable}\n\n"
+        f"Agar boshqa o'zgarishlar bo'lsa — yozing 😊"
+    )
+    try:
+        await instagram.send_dm(instagram_user_id, reply)
+    except Exception as exc:
+        logger.error("instagram_send_failed", error=str(exc))
+
+
 async def _handle_dm_async(
     instagram_user_id: str,
     instagram_username: str | None,
@@ -280,7 +471,8 @@ async def _handle_dm_async(
         )
 
         if conv.status == "converted":
-            logger.info("conversation_already_converted", conv_id=str(conv.id))
+            # Allow client to update order details after placing (address, name, phone)
+            await _handle_converted_conversation(db, redis, conv, instagram_user_id, message_text)
             return
 
         is_first_message = conv.message_count == 0
@@ -293,6 +485,12 @@ async def _handle_dm_async(
             media_url=media_url,
         )
         db.add(client_msg)
+
+        # Suspicious content detection — alert operators but still process normally
+        is_suspicious, suspicious_reason = _check_suspicious(message_text)
+        if is_suspicious:
+            logger.warning("suspicious_content_detected", conv_id=str(conv.id), reason=suspicious_reason)
+            await _send_fraud_alert(conv, suspicious_reason)
 
         context = await _load_context(db)
         history = await _get_conversation_history(db, conv.id)
@@ -307,6 +505,7 @@ async def _handle_dm_async(
         payment_status = "pending"
         payment_transaction_id = None
         payment_amount_verified = None
+        product_image_url: str | None = None
 
         if conv.funnel_stage == "payment" and has_image:
             try:
@@ -321,6 +520,17 @@ async def _handle_dm_async(
                 payment_status, bot_reply_hint = vision.determine_payment_action(vision_result)
                 payment_transaction_id = vision_result.get("transaction_id")
                 payment_amount_verified = vision_result.get("amount")
+
+                # Alert if amount doesn't match (potential fraud or mistake)
+                if not vision_result.get("amount_matches") and vision_result.get("amount"):
+                    detected_amount = vision_result.get("amount", 0)
+                    await _send_fraud_alert(
+                        conv,
+                        f"To'lov summasi mos kelmadi! "
+                        f"Kutilgan: {expected_amount:,} UZS, "
+                        f"Chekda: {detected_amount:,} UZS. "
+                        f"TXN: {payment_transaction_id or 'noma lum'}"
+                    )
             except Exception as exc:
                 logger.error("vision_module_failed", error=str(exc))
                 bot_reply_hint = "request_resend"
@@ -352,6 +562,7 @@ async def _handle_dm_async(
                     current_message=message_text,
                     current_message_has_image=has_image,
                     payment_hint=bot_reply_hint,
+                    telegram_group_link=context.get("telegram_group_link"),
                 )
                 bot_reply = ai_result["reply"]
 
@@ -365,32 +576,64 @@ async def _handle_dm_async(
                 if new_stage == "payment" and old_stage != "payment":
                     card_info = await _get_payment_card_info(db)
                     bot_reply = f"{bot_reply}\n\n{card_info}"
+                    # Mark that this conversation entered payment stage (for fraud detection)
+                    await _update_pending_ticket(redis, str(conv.id), {"_payment_stage_entered": True})
 
                 # Update pending ticket data
                 extracted = ai_result.get("extracted_data", {})
                 if any(v is not None for v in extracted.values()):
                     await _update_pending_ticket(redis, str(conv.id), extracted)
 
-                # Handle completed stage
+                # Check if a product image should be sent
+                if new_stage in ("presentation", "closing", "qualification"):
+                    mentioned_product = extracted.get("product_name")
+                    for p in context["products"]:
+                        name_match = (
+                            (mentioned_product and mentioned_product.lower() in p["name"].lower())
+                            or p["name"].lower() in bot_reply.lower()
+                        )
+                        if name_match and p.get("image_url"):
+                            product_image_url = p["image_url"]
+                            break
+
+                # Handle completed stage — ONLY if payment is actually confirmed or cash order
                 if new_stage == "completed" and conv.status != "converted":
-                    payment_method = "transfer" if has_image else "cash"
-                    ticket = await _create_ticket_from_pending(
-                        db=db,
-                        redis=redis,
-                        conversation=conv,
-                        payment_method=payment_method,
-                        payment_status=payment_status,
-                        payment_screenshot_url=media_url,
-                        payment_transaction_id=payment_transaction_id,
-                        payment_amount_verified=payment_amount_verified,
-                        notes=f"Vision confidence: {vision_result.get('confidence')}" if vision_result else None,
-                    )
-                    await db.commit()
-                    # Send ticket to Telegram (outside transaction)
-                    try:
-                        await send_order_ticket(ticket)
-                    except Exception as exc:
-                        logger.error("telegram_ticket_send_failed", error=str(exc))
+                    # Anti-fraud: if funnel passed through payment stage, require a verified screenshot.
+                    # If the client never sent an image (just text-claimed payment), block completion.
+                    pending_raw = await redis.get(PENDING_TICKET_KEY.format(conversation_id=str(conv.id)))
+                    pending_data = json.loads(pending_raw) if pending_raw else {}
+                    payment_was_in_flow = pending_data.get("_payment_stage_entered", False)
+
+                    if payment_was_in_flow and not has_image and payment_status != "confirmed":
+                        # Someone tried to text-claim payment without sending a screenshot
+                        logger.warning("fraud_attempt_text_payment_claim", conv_id=str(conv.id))
+                        await _send_fraud_alert(conv, "Mijoz to'lov qilmay 'to'lov qildim' deb so'z bilan buyurtmani tasdiqlashga urindi!")
+                        # Override AI reply — ask for screenshot
+                        bot_reply = (
+                            "⚠️ To'lov uchun iltimos chek rasmini yuboring! "
+                            "Faqat rasmli chek qabul qilinadi 📸"
+                        )
+                        # Revert stage back to payment
+                        conv.funnel_stage = "payment"
+                    else:
+                        payment_method = "transfer" if has_image else "cash"
+                        ticket = await _create_ticket_from_pending(
+                            db=db,
+                            redis=redis,
+                            conversation=conv,
+                            payment_method=payment_method,
+                            payment_status=payment_status,
+                            payment_screenshot_url=media_url,
+                            payment_transaction_id=payment_transaction_id,
+                            payment_amount_verified=payment_amount_verified,
+                            notes=f"Vision confidence: {vision_result.get('confidence')}" if vision_result else None,
+                        )
+                        await db.commit()
+                        # Send ticket to Telegram (outside transaction)
+                        try:
+                            await send_order_ticket(ticket)
+                        except Exception as exc:
+                            logger.error("telegram_ticket_send_failed", error=str(exc))
 
             except Exception as exc:
                 logger.error("ai_engine_failed", error=str(exc), exc_info=True)
@@ -422,6 +665,14 @@ async def _handle_dm_async(
         await instagram.send_dm(instagram_user_id, bot_reply)
     except Exception as exc:
         logger.error("instagram_send_failed", error=str(exc))
+
+    # Send product image if bot mentioned a product by name and that product has an image
+    if product_image_url:
+        try:
+            await instagram.send_dm_image(instagram_user_id, product_image_url)
+            logger.info("product_image_sent", user=instagram_user_id)
+        except Exception as exc:
+            logger.debug("product_image_send_failed", error=str(exc))
 
 
 # Import settings here to avoid circular at module level
@@ -522,6 +773,15 @@ def close_stale_conversations():
         return {"closed": 0, "error": str(exc)}
 
 
+def _get_smart_comment_reply(template: str, sender_name: str) -> str:
+    """Return a smart comment reply based on template.
+    If template contains {name}, fill it; keep it as-is otherwise."""
+    name_part = f" {sender_name}," if sender_name else ""
+    if "{name}" in template:
+        return template.replace("{name}", sender_name) if sender_name else template.replace("{name}", "").strip()
+    return template
+
+
 async def _process_comment_dm_async(
     sender_id: str,
     sender_name: str | None,
@@ -563,7 +823,9 @@ async def _process_comment_dm_async(
         already_replied = await redis.exists(reply_dedup_key)
         if not already_replied:
             try:
-                await instagram.reply_to_comment(comment_id, _fill(reply_template))
+                # Generate a context-aware reply based on comment content
+                smart_reply = _get_smart_comment_reply(reply_template, display_name)
+                await instagram.reply_to_comment(comment_id, smart_reply)
                 await redis.set(reply_dedup_key, "1", ex=86400)
                 logger.info("comment_public_reply_sent", comment_id=comment_id)
             except Exception as exc:

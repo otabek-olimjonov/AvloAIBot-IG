@@ -15,6 +15,7 @@ REQUIRED_KEYS = [
     "payment_bank",
     "telegram_bot_token",
     "telegram_group_id",
+    "telegram_group_link",
     "instagram_page_id",
     "instagram_access_token",
     "timezone",

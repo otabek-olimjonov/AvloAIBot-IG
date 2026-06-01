@@ -35,7 +35,14 @@ Respond ONLY with valid JSON in this exact format (no markdown, no explanation):
     "total_amount": null
   }
 }
-Only include extracted_data fields you can confirm from the conversation. Use null for unknown fields.
+
+CRITICAL RULES:
+- Set funnel_stage="completed" ONLY when you have CONFIRMED via image that payment was received. NEVER on text-only claims like "I paid" or "pul yubordim".
+- If client says they paid without sending screenshot: ask for screenshot, keep stage="payment".
+- Be engaging, warm, use relevant emojis (not excessive). Keep replies concise — max 5-6 lines.
+- Give exact, accurate product info. Never guess prices.
+- If client asks about something you don't know: "Bu haqida batafsil ma'lumot uchun Telegram guruhimizga o'ting".
+- Only include extracted_data fields confirmed from conversation. Use null for unknown fields.
 """
 
 
@@ -57,9 +64,11 @@ def _build_prompt(
     current_message: str,
     current_message_has_image: bool = False,
     payment_hint: str | None = None,
+    telegram_group_link: str | None = None,
 ) -> str:
     products_text = "\n".join(
-        f"- {p['name']}: {p['description'] or ''} | Price: {p['price']:,} UZS"
+        f"- {p['name']}: {p['description'] or ''} | Narx: {p['price']:,} UZS"
+        + (f" | Rasm: {p['image_url']}" if p.get("image_url") else "")
         for p in products
     )
 
@@ -86,32 +95,38 @@ def _build_prompt(
         for m in history
     )
 
-    image_note = "\n[The client has sent an image with this message.]" if current_message_has_image else ""
+    image_note = "\n[Mijoz bu xabar bilan rasm yubordi.]" if current_message_has_image else ""
     payment_hint_note = (
-        f"\n\n## Payment Verification Result\n{PAYMENT_HINT_TEXT[payment_hint]}"
+        f"\n\n## To'lov tekshiruvi natijasi\n{PAYMENT_HINT_TEXT[payment_hint]}"
         if payment_hint and payment_hint in PAYMENT_HINT_TEXT
+        else ""
+    )
+    tg_note = (
+        f"\n\n## Telegram guruh\nAgar mijoz ko'proq ma'lumot istasa yoki murakkab savol bo'lsa: {telegram_group_link}"
+        if telegram_group_link
         else ""
     )
 
     return f"""{system_prompt}
 
-## Product Catalog
+## Mahsulotlar katalogi
 {products_text}
 {promotions_text}
 
-## Sales Script for Current Stage
+## Joriy bosqich uchun savdo skripti
 {sales_script}
 
-## FAQ
+## Ko'p so'raladigan savollar (FAQ)
 {faq_text}
+{tg_note}
 
-## Conversation History
+## Suhbat tarixi
 {history_text}
 
-## Current Client Message
+## Mijozning hozirgi xabari
 {current_message}{image_note}{payment_hint_note}
 
-## Instructions
+## Ko'rsatmalar
 {RESPONSE_FORMAT_INSTRUCTIONS}"""
 
 
@@ -168,6 +183,7 @@ async def generate_sales_response(
     current_message: str,
     current_message_has_image: bool = False,
     payment_hint: str | None = None,
+    telegram_group_link: str | None = None,
 ) -> dict:
     """
     Call Gemini and return a parsed response dict with keys:
@@ -183,6 +199,7 @@ async def generate_sales_response(
         current_message=current_message,
         current_message_has_image=current_message_has_image,
         payment_hint=payment_hint,
+        telegram_group_link=telegram_group_link,
     )
 
     raw = await _call_gemini_text(prompt)

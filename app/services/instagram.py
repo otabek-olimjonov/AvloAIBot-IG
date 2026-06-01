@@ -129,6 +129,58 @@ async def reply_to_comment(comment_id: str, message_text: str) -> dict:
         return response.json()
 
 
+async def get_user_profile(user_id: str) -> dict:
+    """Fetch username/name for an Instagram user (cached in Redis for 24h)."""
+    try:
+        from app.services.redis_client import get_redis
+        redis = await get_redis()
+        cache_key = f"ig_profile:{user_id}"
+        cached = await redis.get(cache_key)
+        if cached:
+            import json
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    access_token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{GRAPH_API_BASE}/{user_id}",
+                params={"fields": "name,username", "access_token": access_token},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                try:
+                    import json
+                    from app.services.redis_client import get_redis
+                    redis = await get_redis()
+                    await redis.set(f"ig_profile:{user_id}", json.dumps(data), ex=86400)
+                except Exception:
+                    pass
+                return data
+        except Exception as exc:
+            logger.warning("get_user_profile_failed", user_id=user_id, error=str(exc))
+    return {}
+
+
+async def send_dm_image(recipient_igsid: str, image_url: str) -> dict:
+    """Send an image DM to an Instagram user via the Graph API."""
+    url = f"{GRAPH_API_BASE}/me/messages"
+    payload = {
+        "recipient": {"id": recipient_igsid},
+        "message": {"attachment": {"type": "image", "payload": {"url": image_url, "is_reusable": True}}},
+        "messaging_type": "RESPONSE",
+    }
+    access_token = await _get_access_token()
+    params = {"access_token": access_token}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(url, json=payload, params=params)
+        if response.status_code >= 400:
+            logger.error("instagram_send_dm_image_failed", status_code=response.status_code, body=response.text)
+        return response.json()
+
+
 async def download_media(media_url: str) -> bytes:
     """Download an image from Instagram (requires access token)."""
     access_token = await _get_access_token()

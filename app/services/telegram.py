@@ -198,13 +198,32 @@ async def handle_ticket_callback(callback: CallbackQuery):
     )
 
 
+async def handle_start_command(message: TgMessage):
+    await message.answer(
+        "✅ Instagram Sales Bot operatori!\n\n"
+        "Yangi buyurtmalar shu yerga keladi. "
+        "Tugmalar orqali buyurtmalarni qabul qiling, tasdiqlang yoki bekor qiling."
+    )
+
+
 async def start_telegram_polling():
-    """Start polling in background (used in development; production uses webhooks or long-polling worker)."""
+    """Start long-polling. Deletes any existing webhook to avoid conflicts."""
     global _dp
     bot = get_bot()
+
+    # Remove any webhook that might conflict with polling
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("telegram_webhook_deleted")
+    except Exception as exc:
+        logger.warning("telegram_delete_webhook_failed", error=str(exc))
+
     _dp = Dispatcher()
     _dp.callback_query.register(handle_ticket_callback, F.data.startswith("ticket:"))
-    await _dp.start_polling(bot, allowed_updates=["callback_query"])
+    _dp.message.register(handle_start_command, Command("start"))
+
+    logger.info("telegram_polling_started")
+    await _dp.start_polling(bot, allowed_updates=["callback_query", "message"])
 
 
 async def close_telegram():

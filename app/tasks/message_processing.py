@@ -892,11 +892,18 @@ async def _process_comment_dm_async(
         already_replied = await redis.exists(reply_dedup_key)
         if not already_replied:
             try:
-                # Generate a context-aware reply based on comment content
                 smart_reply = _get_smart_comment_reply(reply_template, display_name)
-                await instagram.reply_to_comment(comment_id, smart_reply)
+                new_reply_id = await instagram.reply_to_comment(comment_id, smart_reply)
                 await redis.set(reply_dedup_key, "1", ex=86400)
-                logger.info("comment_public_reply_sent", comment_id=comment_id)
+                # ── KEY FIX: mark the bot's own reply comment so the webhook
+                # handler skips it and doesn't trigger another reply loop.
+                # We use the actual comment ID returned by the API — this is
+                # reliable regardless of how Instagram represents the account ID.
+                if new_reply_id:
+                    await redis.set(f"our_comment:{new_reply_id}", "1", ex=86400)
+                    logger.info("comment_public_reply_sent", comment_id=comment_id, reply_id=new_reply_id)
+                else:
+                    logger.info("comment_public_reply_sent", comment_id=comment_id)
             except Exception as exc:
                 logger.error("comment_public_reply_failed", comment_id=comment_id, error=str(exc))
         else:
@@ -928,12 +935,23 @@ async def _process_comment_dm_async(
             logger.error("instagram_daily_limit_exceeded_comment_dm", count=count)
             return
 
+        logger.info("comment_dm_attempting", sender_id=sender_id, sender_name=sender_name)
         await instagram.send_dm(sender_id, _fill(dm_template))
         await redis.set(dm_dedup_key, "1", ex=86400)
         await redis.set(f"comment_welcomed:{sender_id}", "1", ex=86400)
         logger.info("comment_auto_dm_sent", sender_id=sender_id)
     except Exception as exc:
-        logger.error("comment_dm_send_failed", sender_id=sender_id, error=str(exc))
+        logger.error(
+            "comment_dm_send_failed",
+            sender_id=sender_id,
+            sender_name=sender_name,
+            error=str(exc),
+            hint=(
+                "If error is 'not reachable' or 200 with error code 10, "
+                "the user must message the business first (standard API access). "
+                "Advanced Access is required to initiate DMs to commenters."
+            ),
+        )
         raise  # Let Celery retry handle it
 
 

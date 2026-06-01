@@ -104,8 +104,8 @@ async def send_dm(recipient_igsid: str, message_text: str) -> dict:
         return response.json()
 
 
-async def reply_to_comment(comment_id: str, message_text: str) -> dict:
-    """Post a public reply to an Instagram comment."""
+async def reply_to_comment(comment_id: str, message_text: str) -> str | None:
+    """Post a public reply to an Instagram comment. Returns the new comment's ID."""
     access_token = await _get_access_token()
     url = f"{GRAPH_API_BASE}/{comment_id}/replies"
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -126,7 +126,8 @@ async def reply_to_comment(comment_id: str, message_text: str) -> dict:
                 body=response.text,
             )
             response.raise_for_status()
-        return response.json()
+        data = response.json()
+        return data.get("id")  # The newly created reply comment ID
 
 
 async def get_user_profile(user_id: str) -> dict:

@@ -158,11 +158,22 @@ async def _handle_comment_event(value: dict):
     if not sender_id:
         return
 
+    # comment_id is required — drop if missing
+    if not comment_id:
+        logger.warning("comment_event_missing_id", sender_id=sender_id)
+        return
+
     redis = await get_redis()
 
-    # ── Skip bot's own comments to prevent infinite reply loops ───────────────
-    # When the bot posts a public reply, Instagram sends a webhook for that reply too.
-    # We must detect and drop it here, otherwise the bot replies to itself forever.
+    # ── Guard 1: skip comments that WE posted ────────────────────────────────
+    # When the bot posts a public reply, Instagram fires a webhook for that reply
+    # too. We track each reply's comment ID in Redis right after posting it, so
+    # we can reliably drop the echo here — regardless of account-ID format mismatches.
+    if await redis.exists(f"our_comment:{comment_id}"):
+        logger.info("comment_skipped_our_own_reply", comment_id=comment_id)
+        return
+
+    # ── Guard 2: also skip by page ID (belt-and-suspenders) ──────────────────
     own_page_id = await redis.get("ig_own_page_id_cache")
     if not own_page_id:
         from app.database import AsyncSessionLocal
@@ -178,21 +189,17 @@ async def _handle_comment_event(value: dict):
     if own_page_id:
         own_pid = own_page_id.decode() if isinstance(own_page_id, bytes) else own_page_id
         if sender_id == own_pid:
-            logger.info("comment_skipped_own_account", sender_id=sender_id)
+            logger.info("comment_skipped_own_account_by_id", sender_id=sender_id)
             return
     # ─────────────────────────────────────────────────────────────────────────
 
-    # Dedup by comment_id (globally unique) to prevent webhook + polling collision
-    if not comment_id:
-        logger.warning("comment_event_missing_id", sender_id=sender_id)
-        return
-
+    # Dedup: prevent webhook + polling from both queueing the same comment
     comment_seen_key = f"comment_id_processed:{comment_id}"
     if await redis.exists(comment_seen_key):
         logger.info("comment_skipped_already_processing", comment_id=comment_id)
         return
 
-    # Mark this comment as being processed (prevents webhook + polling from both queueing)
+    # Mark as being processed
     await redis.set(comment_seen_key, "1", ex=86400)
 
     logger.info("comment_dm_queued", comment_id=comment_id, sender_id=sender_id, sender_name=sender_name)

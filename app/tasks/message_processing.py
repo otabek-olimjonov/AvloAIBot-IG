@@ -361,6 +361,24 @@ UPDATE_KEYWORDS = [
     "xato", "noto'g'ri", "notogri", "esdan", "change", "update", "correct",
 ]
 
+# Words that signal new-order intent (must appear together with order words below)
+_NEW_SIGNAL_WORDS = [
+    "yangi", "yana", "qaytadan", "yangidan", "yana bir", "new", "reorder",
+    "опять", "снова", "новый", "повторно",
+]
+_ORDER_WORDS = [
+    "buyurtma", "zakaz", "order", "заказ", "olmoqchi", "sotib", "olmоqchiman",
+    "bermoqchi", "xohlayman", "xohlaydigan",
+]
+
+
+def _is_new_order_intent(text: str) -> bool:
+    """Return True if the message clearly expresses intent to place a NEW order."""
+    t = text.lower()
+    has_new_signal = any(w in t for w in _NEW_SIGNAL_WORDS)
+    has_order_word = any(w in t for w in _ORDER_WORDS)
+    return has_new_signal and has_order_word
+
 
 async def _handle_converted_conversation(
     db: AsyncSession,
@@ -378,11 +396,11 @@ async def _handle_converted_conversation(
     is_update_request = any(kw in text_lower for kw in UPDATE_KEYWORDS)
 
     if not is_update_request:
-        # Generic reply for non-update messages
+        # Generic reply — remind them of options
         reply = (
-            "✅ Sizning buyurtmangiz qabul qilingan va jarayonda!\n\n"
-            "Agar manzil, ism yoki telefon raqamingizni o'zgartirmoqchi bo'lsangiz — "
-            "yangi ma'lumotni yozing, biz darhol yangilaymiz 📝"
+            "✅ Buyurtmangiz qabul qilingan va jarayonda!\n\n"
+            "📝 Manzil, ism yoki telefon o'zgartirish uchun yangi ma'lumotni yozing.\n"
+            "🛍 Yangi buyurtma berish uchun: \"Yangi buyurtma bermoqchiman\" deb yozing."
         )
         try:
             await instagram.send_dm(instagram_user_id, reply)
@@ -504,9 +522,23 @@ async def _handle_dm_async(
         )
 
         if conv.status == "converted":
-            # Allow client to update order details after placing (address, name, phone)
-            await _handle_converted_conversation(db, redis, conv, instagram_user_id, message_text)
-            return
+            if _is_new_order_intent(message_text):
+                # Client wants a NEW order — open a fresh active conversation
+                logger.info("new_order_intent_detected", conv_id=str(conv.id), user=instagram_user_id)
+                conv = Conversation(
+                    instagram_user_id=instagram_user_id,
+                    instagram_username=instagram_username,
+                    source=source,
+                    status="active",
+                    funnel_stage="greeting",
+                )
+                db.add(conv)
+                await db.flush()
+                # Fall through to normal AI processing below
+            else:
+                # Client wants to update existing order details
+                await _handle_converted_conversation(db, redis, conv, instagram_user_id, message_text)
+                return
 
         is_first_message = conv.message_count == 0
 

@@ -132,14 +132,15 @@ async def reply_to_comment(comment_id: str, message_text: str) -> str | None:
 
 async def get_user_profile(user_id: str) -> dict:
     """Fetch username/name for an Instagram user (cached in Redis for 24h)."""
+    import json as _json
+
     try:
         from app.services.redis_client import get_redis
         redis = await get_redis()
         cache_key = f"ig_profile:{user_id}"
         cached = await redis.get(cache_key)
         if cached:
-            import json
-            return json.loads(cached)
+            return _json.loads(cached)
     except Exception:
         pass
 
@@ -150,18 +151,31 @@ async def get_user_profile(user_id: str) -> dict:
                 f"{GRAPH_API_BASE}/{user_id}",
                 params={"fields": "name,username", "access_token": access_token},
             )
+            logger.info(
+                "get_user_profile_response",
+                user_id=user_id,
+                status=resp.status_code,
+                body_preview=resp.text[:200],
+            )
             if resp.status_code == 200:
                 data = resp.json()
+                # Cache for 24h
                 try:
-                    import json
                     from app.services.redis_client import get_redis
                     redis = await get_redis()
-                    await redis.set(f"ig_profile:{user_id}", json.dumps(data), ex=86400)
+                    await redis.set(f"ig_profile:{user_id}", _json.dumps(data), ex=86400)
                 except Exception:
                     pass
                 return data
+            else:
+                logger.warning(
+                    "get_user_profile_failed",
+                    user_id=user_id,
+                    status=resp.status_code,
+                    body=resp.text[:300],
+                )
         except Exception as exc:
-            logger.warning("get_user_profile_failed", user_id=user_id, error=str(exc))
+            logger.warning("get_user_profile_exception", user_id=user_id, error=str(exc))
     return {}
 
 

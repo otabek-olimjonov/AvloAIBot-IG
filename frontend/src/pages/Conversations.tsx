@@ -118,7 +118,11 @@ export default function Conversations() {
                     <td className="table-cell">
                       <div>
                         <p className="font-medium text-slate-900">
-                          {conv.instagram_username ? `@${conv.instagram_username}` : conv.instagram_user_id}
+                          {conv.instagram_username
+                            ? (conv.instagram_username.includes(' ')
+                                ? conv.instagram_username
+                                : `@${conv.instagram_username}`)
+                            : conv.instagram_user_id}
                         </p>
                         {conv.instagram_username && (
                           <p className="text-xs text-slate-400">{conv.instagram_user_id}</p>

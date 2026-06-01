@@ -90,7 +90,9 @@ export default function Tickets() {
                     <td className="table-cell font-mono text-xs text-slate-500">#{t.ticket_number}</td>
                     <td className="table-cell">
                       <div>
-                        <p className="font-medium">@{t.client_instagram}</p>
+                        <p className="font-medium">
+                          {t.client_instagram.includes(' ') ? t.client_instagram : `@${t.client_instagram}`}
+                        </p>
                         {t.client_name && <p className="text-xs text-slate-400">{t.client_name}</p>}
                       </div>
                     </td>
@@ -179,7 +181,7 @@ function TicketDetailModal({
     <Modal open onClose={onClose} title={`Ticket #${t.ticket_number}`} size="lg">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Section title="Customer">
-          <Row label="Instagram" value={`@${t.client_instagram}`} />
+          <Row label="Instagram" value={t.client_instagram.includes(' ') ? t.client_instagram : `@${t.client_instagram}`} />
           {t.client_name && <Row label="Name" value={t.client_name} />}
           {t.client_phone && <Row label="Phone" value={t.client_phone} />}
           {t.client_city && <Row label="City" value={t.client_city} />}

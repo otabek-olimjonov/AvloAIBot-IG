@@ -54,7 +54,7 @@ def _format_ticket_message(ticket) -> str:
         f"🛍 NEW ORDER #{ticket.ticket_number:05d}",
         "",
         f"🗓 Date: {ticket.created_at.strftime('%d.%m.%Y, %H:%M')}",
-        f"👤 Instagram: @{ticket.client_instagram}",
+        f"👤 Instagram: {'@' if ' ' not in ticket.client_instagram else ''}{ticket.client_instagram}",
     ]
     if ticket.client_name:
         lines.append(f"✏️ Name: {ticket.client_name}")

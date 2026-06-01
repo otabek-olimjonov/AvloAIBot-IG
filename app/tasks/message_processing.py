@@ -517,9 +517,21 @@ async def _handle_dm_async(
                 logger.error("instagram_send_failed", error=str(exc))
             return
 
+        # Resolve username if webhook didn't provide it (fallback inside the task)
+        if not instagram_username:
+            try:
+                profile = await instagram.get_user_profile(instagram_user_id)
+                instagram_username = profile.get("username") or profile.get("name") or None
+            except Exception:
+                pass
+
         conv = await _get_or_create_conversation(
             db, instagram_user_id, instagram_username, source
         )
+
+        # Backfill username on existing conversation if it was missing
+        if instagram_username and not conv.instagram_username:
+            conv.instagram_username = instagram_username
 
         if conv.status == "converted":
             if _is_new_order_intent(message_text):

@@ -160,11 +160,33 @@ async def _handle_comment_event(value: dict):
 
     redis = await get_redis()
 
+    # ── Skip bot's own comments to prevent infinite reply loops ───────────────
+    # When the bot posts a public reply, Instagram sends a webhook for that reply too.
+    # We must detect and drop it here, otherwise the bot replies to itself forever.
+    own_page_id = await redis.get("ig_own_page_id_cache")
+    if not own_page_id:
+        from app.database import AsyncSessionLocal
+        from app.models import Setting as _Setting
+        from sqlalchemy import select as _select
+        async with AsyncSessionLocal() as _db:
+            _res = await _db.execute(_select(_Setting.value).where(_Setting.key == "instagram_page_id"))
+            _pid = _res.scalar_one_or_none() or ""
+            if _pid:
+                await redis.set("ig_own_page_id_cache", _pid, ex=3600)
+                own_page_id = _pid
+
+    if own_page_id:
+        own_pid = own_page_id.decode() if isinstance(own_page_id, bytes) else own_page_id
+        if sender_id == own_pid:
+            logger.info("comment_skipped_own_account", sender_id=sender_id)
+            return
+    # ─────────────────────────────────────────────────────────────────────────
+
     # Dedup by comment_id (globally unique) to prevent webhook + polling collision
     if not comment_id:
         logger.warning("comment_event_missing_id", sender_id=sender_id)
         return
-    
+
     comment_seen_key = f"comment_id_processed:{comment_id}"
     if await redis.exists(comment_seen_key):
         logger.info("comment_skipped_already_processing", comment_id=comment_id)

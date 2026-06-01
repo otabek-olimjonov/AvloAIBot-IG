@@ -840,7 +840,17 @@ async def _process_comment_dm_async(
 
     dm_template = settings_map.get("comment_auto_dm_message", "").strip()
     if not dm_template:
-        logger.info("comment_auto_dm_message_empty")
+        logger.warning(
+            "comment_auto_dm_message_empty — DM not sent. "
+            "Set 'comment_auto_dm_message' in Settings to enable DMs to commenters."
+        )
+        return
+
+    # Dedup: only DM each person once per 24 hours from comments
+    dm_dedup_key = f"comment_dm_sent:{sender_id}"
+    already_dmed = await redis.exists(dm_dedup_key)
+    if already_dmed:
+        logger.info("comment_dm_skipped_already_sent_today", sender_id=sender_id)
         return
 
     try:
@@ -850,6 +860,7 @@ async def _process_comment_dm_async(
             return
 
         await instagram.send_dm(sender_id, _fill(dm_template))
+        await redis.set(dm_dedup_key, "1", ex=86400)
         await redis.set(f"comment_welcomed:{sender_id}", "1", ex=86400)
         logger.info("comment_auto_dm_sent", sender_id=sender_id)
     except Exception as exc:
@@ -930,9 +941,11 @@ async def _poll_comments_async() -> int:
             # (e.g. scoped user ID vs. Instagram Business Account ID in comment threads).
             me_resp = await client.get(
                 f"{base}/me",
-                params={"fields": "id", "access_token": access_token},
+                params={"fields": "id,username", "access_token": access_token},
             )
-            page_ig_user_id = me_resp.json().get("id") if me_resp.status_code == 200 else None
+            me_data = me_resp.json() if me_resp.status_code == 200 else {}
+            page_ig_user_id = me_data.get("id")
+            page_ig_username = (me_data.get("username") or "").lower()
             # Build a set of all own-account IDs to skip (includes both the /me scoped ID
             # and the instagram_page_id setting which may differ in comment thread context)
             own_ids = {id_ for id_ in [page_ig_user_id, page_id] if id_}
@@ -967,10 +980,11 @@ async def _poll_comments_async() -> int:
                         continue
 
                     # Skip the page's own comments (can't DM yourself).
-                    # Checks all known own-account IDs (the account may appear with
-                    # different IDs in /me vs. comment thread contexts).
-                    if sender_id in own_ids:
-                        logger.debug("comment_poll_skip_own_comment", sender_id=sender_id)
+                    # Check by ID and also by username — the account may appear with
+                    # different IDs in /me vs. comment thread contexts.
+                    sender_username_lower = (sender_name or "").lower()
+                    if sender_id in own_ids or (page_ig_username and sender_username_lower == page_ig_username):
+                        logger.debug("comment_poll_skip_own_comment", sender_id=sender_id, sender_name=sender_name)
                         continue
 
                     # Skip if this specific comment was already replied to

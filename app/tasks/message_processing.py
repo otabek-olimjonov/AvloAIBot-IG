@@ -548,9 +548,7 @@ async def _process_comment_dm_async(
         )
         settings_map = {s.key: s.value for s in result.scalars().all()}
 
-    if settings_map.get("comment_auto_dm_enabled", "true").lower() != "true":
-        logger.info("comment_auto_dm_disabled")
-        return
+    comment_auto_dm_enabled = settings_map.get("comment_auto_dm_enabled", "true").lower() == "true"
 
     display_name = (sender_name or "").strip()
 
@@ -574,6 +572,10 @@ async def _process_comment_dm_async(
             logger.debug("comment_public_reply_skipped_dedup", comment_id=comment_id)
 
     # ── 2. DM ─────────────────────────────────────────────────────────────────
+    if not comment_auto_dm_enabled:
+        logger.info("comment_auto_dm_disabled_post_reply")
+        return
+
     dm_template = settings_map.get("comment_auto_dm_message", "").strip()
     if not dm_template:
         logger.info("comment_auto_dm_message_empty")
@@ -709,26 +711,13 @@ async def _poll_comments_async() -> int:
                         logger.debug("comment_poll_skip_own_comment", sender_id=sender_id)
                         continue
 
-                    # Skip if this specific comment was already replied to (covers bot's
-                    # reply-comments that appear with an unexpected account ID variant)
-                    comment_seen_key = f"comment_id_seen:{comment_id}"
+                    # Skip if this specific comment was already replied to
+                    # Using comment_id (globally unique) prevents webhook + polling collision
+                    comment_seen_key = f"comment_id_processed:{comment_id}"
                     if await redis.exists(comment_seen_key):
                         continue
-                    # Mark this comment as seen immediately (before queuing)
+                    # Mark this comment as processed immediately (before queuing)
                     await redis.set(comment_seen_key, "1", ex=86400)
-
-                    # Skip if already processed (dedup key set per user per post, 24h TTL)
-                    dedup_key = f"comment_dm_sent:{sender_id}:{post_id}"
-                    if await redis.exists(dedup_key):
-                        logger.debug(
-                            "comment_poll_skip_dedup",
-                            sender_id=sender_id,
-                            post_id=post_id,
-                        )
-                        continue
-
-                    # Mark dedup before queuing (prevents double-send on concurrent polls)
-                    await redis.set(dedup_key, "1", ex=86400)
 
                     process_comment_dm.delay(
                         sender_id=sender_id,

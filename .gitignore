@@ -12,3 +12,7 @@ build/
 postgres_data/
 redis_data/
 *.log
+.env
+.DS_Store
+.idea/
+.vscode/

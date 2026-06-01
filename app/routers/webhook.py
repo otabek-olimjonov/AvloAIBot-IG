@@ -151,32 +151,20 @@ async def _handle_comment_event(value: dict):
 
     redis = await get_redis()
 
-    # Dedup: send at most one auto-DM per user per post per day
-    dedup_key = f"comment_dm_sent:{sender_id}:{post_id}"
-    if await redis.exists(dedup_key):
-        logger.info("comment_dm_skipped_dedup", sender_id=sender_id)
+    # Dedup by comment_id (globally unique) to prevent webhook + polling collision
+    if not comment_id:
+        logger.warning("comment_event_missing_id", sender_id=sender_id)
+        return
+    
+    comment_seen_key = f"comment_id_processed:{comment_id}"
+    if await redis.exists(comment_seen_key):
+        logger.info("comment_skipped_already_processing", comment_id=comment_id)
         return
 
-    # Skip if this user already has an active conversation with us
-    from app.database import AsyncSessionLocal
-    from app.models import Conversation
-    from sqlalchemy import select
+    # Mark this comment as being processed (prevents webhook + polling from both queueing)
+    await redis.set(comment_seen_key, "1", ex=86400)
 
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(Conversation).where(
-                Conversation.instagram_user_id == sender_id,
-                Conversation.status == "active",
-            ).limit(1)
-        )
-        if result.scalar_one_or_none():
-            logger.info("comment_dm_skipped_active_conv", sender_id=sender_id)
-            return
-
-    # Mark dedup NOW (before task runs) so concurrent webhook deliveries don't double-send
-    await redis.set(dedup_key, "1", ex=86400)
-
-    logger.info("comment_dm_queued", sender_id=sender_id, sender_name=sender_name)
+    logger.info("comment_dm_queued", comment_id=comment_id, sender_id=sender_id, sender_name=sender_name)
 
     # Offload to Celery — keeps the webhook response fast
     process_comment_dm.delay(

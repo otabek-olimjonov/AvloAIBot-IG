@@ -29,16 +29,8 @@ if ! docker info &>/dev/null; then
 fi
 log "Docker is running."
 
-# ─── Install cloudflared ──────────────────────────────────────────────────────
-info "Checking cloudflared (tunnel tool)..."
-if ! command -v cloudflared &>/dev/null; then
-  info "Installing cloudflared via Homebrew..."
-  if ! command -v brew &>/dev/null; then
-    err "Homebrew not found. Install it from https://brew.sh then re-run this script."
-  fi
-  brew install cloudflare/cloudflare/cloudflared
-fi
-log "cloudflared is ready."
+# ─── Skip cloudflared (using public domain) ───────────────────────────────────
+info "Using public domain for incoming webhook (no tunnel)."
 
 # ─── Start Docker services ────────────────────────────────────────────────────
 info "Starting all services (this may take a few minutes on first run)..."
@@ -49,6 +41,57 @@ log "All Docker services started."
 # Restart nginx after build so it re-resolves container IPs (prevents 502 from stale DNS cache)
 docker compose restart nginx
 log "nginx restarted (fresh DNS for upstream containers)."
+
+# ─── Prepare ACME webroot and obtain certificates if needed ───────────────────
+info "Ensuring ACME webroot exists and is writable..."
+mkdir -p /var/www/certbot
+chown -R $(id -u):$(id -g) /var/www/certbot || true
+
+# Read certbot email from .env (optional)
+CERTBOT_EMAIL=$(grep -E "^CERTBOT_EMAIL=" .env 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+# Domains to request
+DOMAINS=("beekeeper.uz" "www.beekeeper.uz")
+
+# Helper: join domains to -d args
+domain_args=""
+for d in "${DOMAINS[@]}"; do
+  domain_args+=" -d $d"
+done
+
+# Only attempt to obtain certs if not already present
+if [ ! -f /etc/letsencrypt/live/beekeeper.uz/fullchain.pem ]; then
+  info "No existing certificate found for beekeeper.uz — attempting to obtain via Certbot webroot."
+  if [ -n "$CERTBOT_EMAIL" ]; then
+    CERT_EMAIL_ARG="--email $CERTBOT_EMAIL --agree-tos --no-eff-email"
+  else
+    warn "No CERTBOT_EMAIL set in .env — registering without email (not recommended)."
+    CERT_EMAIL_ARG="--register-unsafely-without-email --agree-tos"
+  fi
+
+  set +e
+  sudo certbot certonly --webroot -w /var/www/certbot $domain_args $CERT_EMAIL_ARG --non-interactive
+  rc=$?
+  set -e
+
+  if [ $rc -eq 0 ]; then
+    log "Certificates obtained successfully. Reloading nginx."
+    docker compose exec nginx nginx -s reload || docker compose restart nginx
+  else
+    warn "Certbot failed (exit $rc). You may need to check DNS or run certbot manually."
+  fi
+else
+  log "Existing certificate found for beekeeper.uz — skipping obtain step."
+fi
+
+# ─── Ensure automated renewal is scheduled (cron) ─────────────────────────────
+info "Ensuring certbot renewal cron exists..."
+CRON_ENTRY="0 3 * * * root certbot renew --post-hook 'docker compose exec nginx nginx -s reload' >> /var/log/letsencrypt/renew.log 2>&1"
+if ! sudo grep -F "$CRON_ENTRY" /etc/crontab >/dev/null 2>&1; then
+  sudo bash -c "echo '$CRON_ENTRY' >> /etc/crontab"
+  log "Installed certbot renewal cron."
+else
+  log "Certbot renewal cron already present."
+fi
 
 # ─── Wait for app to be healthy ───────────────────────────────────────────────
 info "Waiting for the app to be ready on port 8000..."
@@ -73,69 +116,50 @@ info "Seeding initial data..."
 docker compose exec -T app python -m scripts.seed 2>/dev/null || warn "Seed already ran or skipped."
 
 # ─── Start cloudflared tunnel ─────────────────────────────────────────────────
-info "Starting public tunnel on port 8000..."
-
 # Read the actual verify token from .env so the hint is always correct
-VERIFY_TOKEN=$(grep -E "^META_VERIFY_TOKEN=" .env 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+VERIFY_TOKEN=$(grep -E "^META_VERIFY_TOKEN=" .env 2>/dev/null | cut -d= -f2- | tr -d '"')
 if [ -z "$VERIFY_TOKEN" ]; then
   VERIFY_TOKEN="<see META_VERIFY_TOKEN in .env>"
 fi
 
-echo ""
-echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}  Tunnel starting - look for a line like:              ${NC}"
-echo -e "${YELLOW}  https://xxxx-xxxx.trycloudflare.com                  ${NC}"
-echo -e "${YELLOW}                                                        ${NC}"
-echo -e "${YELLOW}  Admin panel : <that-url>/                            ${NC}"
-echo -e "${YELLOW}  Webhook URL : <that-url>/api/v1/webhook/instagram    ${NC}"
-echo -e "${YELLOW}  Verify token: ${VERIFY_TOKEN}                        ${NC}"
-echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-# Start tunnel in background, capture the URL, then register the Meta webhook subscription
-TUNNEL_LOG=$(mktemp)
-cloudflared tunnel --url http://localhost:80 --protocol http2 2>&1 | tee "$TUNNEL_LOG" &
-TUNNEL_PID=$!
-
-# Wait for the public URL to appear
-info "Waiting for tunnel URL..."
-TUNNEL_URL=""
-for i in $(seq 1 30); do
-  TUNNEL_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -1)
-  if [ -n "$TUNNEL_URL" ]; then break; fi
-  sleep 2
-done
-
-if [ -n "$TUNNEL_URL" ]; then
-  WEBHOOK_URL="${TUNNEL_URL}/api/v1/webhook/instagram"
-  log "Tunnel URL: ${TUNNEL_URL}"
-
-  # Read Meta credentials from .env
-  APP_ID=$(grep -E "^META_APP_ID=" .env 2>/dev/null | cut -d= -f2- | tr -d '"')
-  APP_SECRET=$(grep -E "^META_APP_SECRET=" .env 2>/dev/null | cut -d= -f2- | tr -d '"')
-  VERIFY_TOKEN_VAL=$(grep -E "^META_VERIFY_TOKEN=" .env 2>/dev/null | cut -d= -f2- | tr -d '"')
-
-  if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ] && [ -n "$VERIFY_TOKEN_VAL" ]; then
-    info "Registering webhook subscription with Meta..."
-    APP_TOKEN=$(curl -sf "https://graph.facebook.com/oauth/access_token?client_id=${APP_ID}&client_secret=${APP_SECRET}&grant_type=client_credentials" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null)
-    if [ -n "$APP_TOKEN" ]; then
-      RESULT=$(curl -sf -X POST "https://graph.facebook.com/v25.0/${APP_ID}/subscriptions" \
-        -d "object=instagram" \
-        -d "callback_url=${WEBHOOK_URL}" \
-        -d "fields=comments,messages" \
-        -d "verify_token=${VERIFY_TOKEN_VAL}" \
-        -d "access_token=${APP_TOKEN}" 2>/dev/null)
-      if echo "$RESULT" | grep -q '"success":true'; then
-        log "Webhook subscription registered: comments + messages"
-      else
-        warn "Webhook subscription failed: $RESULT"
-      fi
-    else
-      warn "Could not get app access token - register webhook manually"
-    fi
-  else
-    warn "META_APP_ID/APP_SECRET/VERIFY_TOKEN not in .env - skipping auto-subscription"
-  fi
+# Determine public URL for webhook registration. Preference order:
+# 1) PUBLIC_URL in .env
+# 2) VITE_API_URL in .env
+# 3) default to https://beekeeper.uz
+PUBLIC_URL=$(grep -E "^PUBLIC_URL=" .env 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+if [ -z "$PUBLIC_URL" ]; then
+  PUBLIC_URL=$(grep -E "^VITE_API_URL=" .env 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+fi
+if [ -z "$PUBLIC_URL" ]; then
+  PUBLIC_URL="https://beekeeper.uz"
 fi
 
-wait $TUNNEL_PID
+WEBHOOK_URL="${PUBLIC_URL%/}/api/v1/webhook/instagram"
+log "Using public webhook URL: ${WEBHOOK_URL}"
+
+# Read Meta credentials from .env
+APP_ID=$(grep -E "^META_APP_ID=" .env 2>/dev/null | cut -d= -f2- | tr -d '"')
+APP_SECRET=$(grep -E "^META_APP_SECRET=" .env 2>/dev/null | cut -d= -f2- | tr -d '"')
+VERIFY_TOKEN_VAL=$(grep -E "^META_VERIFY_TOKEN=" .env 2>/dev/null | cut -d= -f2- | tr -d '"')
+
+if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ] && [ -n "$VERIFY_TOKEN_VAL" ]; then
+  info "Registering webhook subscription with Meta using public domain..."
+  APP_TOKEN=$(curl -sf "https://graph.facebook.com/oauth/access_token?client_id=${APP_ID}&client_secret=${APP_SECRET}&grant_type=client_credentials" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null)
+  if [ -n "$APP_TOKEN" ]; then
+    RESULT=$(curl -sf -X POST "https://graph.facebook.com/v25.0/${APP_ID}/subscriptions" \
+      -d "object=instagram" \
+      -d "callback_url=${WEBHOOK_URL}" \
+      -d "fields=comments,messages" \
+      -d "verify_token=${VERIFY_TOKEN_VAL}" \
+      -d "access_token=${APP_TOKEN}" 2>/dev/null)
+    if echo "$RESULT" | grep -q '"success":true'; then
+      log "Webhook subscription registered: comments + messages"
+    else
+      warn "Webhook subscription failed: $RESULT"
+    fi
+  else
+    warn "Could not get app access token - register webhook manually"
+  fi
+else
+  warn "META_APP_ID/APP_SECRET/VERIFY_TOKEN not in .env - skipping auto-subscription"
+fi

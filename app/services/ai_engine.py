@@ -51,6 +51,7 @@ PAYMENT_HINT_TEXT = {
     "flag_confirm": "Payment screenshot received — amount matches but confidence is medium. Accept and move to completed stage, but note it for manual review.",
     "request_resend": "Payment screenshot could not be verified — amount mismatch or unclear image. Politely ask the customer to resend a clearer screenshot.",
     "not_screenshot": "The image sent does not appear to be a payment screenshot. Politely inform the customer and ask them to send the payment receipt.",
+    "duplicate_receipt": "This receipt has already been used for a previous order. Keep stage=payment and firmly but politely tell the client to send a NEW payment receipt for this order.",
 }
 
 

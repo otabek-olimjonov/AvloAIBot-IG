@@ -248,6 +248,39 @@ def _check_suspicious(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+def _build_receipt_fingerprint(vision_result: dict) -> str | None:
+    """
+    Build a stable fingerprint for a payment receipt to detect reuse.
+    Uses transaction_id if available; falls back to amount+date+card combination.
+    Returns None if there's not enough info to fingerprint reliably.
+    """
+    import hashlib
+
+    txn_id = (vision_result.get("transaction_id") or "").strip()
+    amount = vision_result.get("amount") or 0
+    date = (vision_result.get("date") or "").strip()
+    card = (vision_result.get("sender_card_last4") or "").strip()
+
+    if txn_id:
+        # Transaction ID is globally unique — best fingerprint
+        return f"txn:{txn_id}"
+
+    # Fallback: hash of amount + date + card (if we have at least 2 of 3)
+    fields_present = sum(1 for f in [amount, date, card] if f)
+    if fields_present >= 2:
+        raw = f"{amount}:{date}:{card}"
+        return "hash:" + hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    return None
+
+
+async def _register_receipt(redis, vision_result: dict, owner_label: str) -> None:
+    """Store a confirmed receipt fingerprint in Redis for 180 days."""
+    fp = _build_receipt_fingerprint(vision_result)
+    if fp:
+        await redis.set(f"used_receipt:{fp}", owner_label, ex=86400 * 180)
+
+
 async def _update_pending_ticket(redis, conversation_id: str, extracted_data: dict):
     key = PENDING_TICKET_KEY.format(conversation_id=conversation_id)
     existing_raw = await redis.get(key)
@@ -521,8 +554,33 @@ async def _handle_dm_async(
                 payment_transaction_id = vision_result.get("transaction_id")
                 payment_amount_verified = vision_result.get("amount")
 
-                # Alert if amount doesn't match (potential fraud or mistake)
-                if not vision_result.get("amount_matches") and vision_result.get("amount"):
+                # ── Duplicate/old receipt detection ───────────────────────────
+                reused_receipt = False
+                txn_fingerprint = _build_receipt_fingerprint(vision_result)
+                if txn_fingerprint:
+                    used_key = f"used_receipt:{txn_fingerprint}"
+                    already_used = await redis.get(used_key)
+                    if already_used:
+                        existing_owner = already_used.decode() if isinstance(already_used, bytes) else already_used
+                        reused_receipt = True
+                        logger.warning(
+                            "duplicate_receipt_detected",
+                            fingerprint=txn_fingerprint,
+                            conv_id=str(conv.id),
+                            original_user=existing_owner,
+                        )
+                        await _send_fraud_alert(
+                            conv,
+                            f"⚠️ ESKI/TAKRORIY CHEK yuborildi!\n"
+                            f"TXN: {payment_transaction_id or 'noma lum'}\n"
+                            f"Summa: {payment_amount_verified:,} UZS\n"
+                            f"Avval ishlatgan: {existing_owner}"
+                        )
+                        bot_reply_hint = "duplicate_receipt"
+                        payment_status = "pending"
+
+                # ── Amount mismatch alert ─────────────────────────────────────
+                if not reused_receipt and not vision_result.get("amount_matches") and vision_result.get("amount"):
                     detected_amount = vision_result.get("amount", 0)
                     await _send_fraud_alert(
                         conv,
@@ -608,12 +666,19 @@ async def _handle_dm_async(
                         # Someone tried to text-claim payment without sending a screenshot
                         logger.warning("fraud_attempt_text_payment_claim", conv_id=str(conv.id))
                         await _send_fraud_alert(conv, "Mijoz to'lov qilmay 'to'lov qildim' deb so'z bilan buyurtmani tasdiqlashga urindi!")
-                        # Override AI reply — ask for screenshot
                         bot_reply = (
                             "⚠️ To'lov uchun iltimos chek rasmini yuboring! "
                             "Faqat rasmli chek qabul qilinadi 📸"
                         )
-                        # Revert stage back to payment
+                        conv.funnel_stage = "payment"
+                    elif reused_receipt:
+                        # Duplicate/old receipt — block order creation
+                        logger.warning("duplicate_receipt_blocked_order", conv_id=str(conv.id))
+                        bot_reply = (
+                            "❌ Bu chek avval ishlatilgan yoki eskirgan!\n\n"
+                            "Iltimos yangi to'lov chekini yuboring. "
+                            "Har bir buyurtma uchun alohida to'lov talab etiladi 📸"
+                        )
                         conv.funnel_stage = "payment"
                     else:
                         payment_method = "transfer" if has_image else "cash"
@@ -629,6 +694,10 @@ async def _handle_dm_async(
                             notes=f"Vision confidence: {vision_result.get('confidence')}" if vision_result else None,
                         )
                         await db.commit()
+                        # Register receipt fingerprint so it can't be reused
+                        if vision_result:
+                            owner_label = conv.instagram_username or conv.instagram_user_id
+                            await _register_receipt(redis, vision_result, owner_label)
                         # Send ticket to Telegram (outside transaction)
                         try:
                             await send_order_ticket(ticket)

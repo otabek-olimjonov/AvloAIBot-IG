@@ -638,6 +638,7 @@ async def _handle_dm_async(
         payment_transaction_id = None
         payment_amount_verified = None
         product_image_url: str | None = None
+        reused_receipt = False  # must be initialised here — vision block may be skipped for cash orders
 
         if conv.funnel_stage == "payment" and has_image:
             try:

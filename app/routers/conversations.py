@@ -16,6 +16,16 @@ from app.services.auth import get_current_user, require_admin, UserInfo
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 
+def _last_msg_subq():
+    """Correlated subquery: max message created_at for a conversation (for sorting)."""
+    return (
+        select(func.max(Message.created_at))
+        .where(Message.conversation_id == Conversation.id)
+        .correlate(Conversation)
+        .scalar_subquery()
+    )
+
+
 @router.get("", response_model=PaginatedConversations)
 async def list_conversations(
     status: str | None = Query(default=None),
@@ -34,7 +44,8 @@ async def list_conversations(
     count_result = await db.execute(select(func.count()).select_from(query.subquery()))
     total = count_result.scalar_one()
 
-    query = query.order_by(Conversation.started_at.desc()).offset((page - 1) * per_page).limit(per_page)
+    # Sort by latest message activity so recently active conversations appear first
+    query = query.order_by(_last_msg_subq().desc().nullslast(), Conversation.started_at.desc()).offset((page - 1) * per_page).limit(per_page)
     result = await db.execute(query)
 
     return PaginatedConversations(

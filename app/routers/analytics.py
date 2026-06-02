@@ -2,11 +2,11 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, func, cast, Date, text
+from sqlalchemy import select, func, cast, Date, text, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Conversation, Ticket, Setting
+from app.models import Conversation, Message, Ticket, Setting
 from app.services.auth import get_current_user, UserInfo
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -65,11 +65,12 @@ async def dashboard(
     tz = await _get_business_tz(db)
     today_start, today_end = _today_bounds_naive_utc(tz)
 
-    # Today's conversations
+    # Today's conversations — count distinct conversations that had any message activity today
+    # (not just ones that started today, so reactivated conversations are included)
     conv_result = await db.execute(
-        select(func.count(Conversation.id)).where(
-            Conversation.started_at >= today_start,
-            Conversation.started_at <= today_end,
+        select(func.count(distinct(Message.conversation_id))).where(
+            Message.created_at >= today_start,
+            Message.created_at <= today_end,
         )
     )
     today_conversations = conv_result.scalar_one()

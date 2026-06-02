@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { MessageSquare, ChevronRight, Search } from 'lucide-react'
-import { formatDistanceToNow, parseISO } from 'date-fns'
+import { format, isToday, isYesterday, parseISO } from 'date-fns'
 
 import { conversationsApi } from '../lib/api'
 import type { ConversationStatus, FunnelStage } from '../types'
@@ -31,6 +31,13 @@ const STAGE_OPTIONS = [
   { value: 'payment', label: 'Payment' },
   { value: 'completed', label: 'Completed' },
 ]
+
+function fmtTime(iso: string) {
+  const d = parseISO(iso)
+  if (isToday(d)) return format(d, 'HH:mm')
+  if (isYesterday(d)) return `Yesterday ${format(d, 'HH:mm')}`
+  return format(d, 'MMM d, HH:mm')
+}
 
 export default function Conversations() {
   const navigate = useNavigate()
@@ -144,7 +151,7 @@ export default function Conversations() {
                       <Badge variant={statusBadge.variant} dot size="sm">{statusBadge.label}</Badge>
                     </td>
                     <td className="table-cell text-slate-500 text-xs whitespace-nowrap">
-                      {formatDistanceToNow(parseISO(conv.started_at), { addSuffix: true })}
+                      {fmtTime(conv.started_at)}
                     </td>
                     <td className="table-cell text-right">
                       <ChevronRight className="w-4 h-4 text-slate-300 ml-auto" />

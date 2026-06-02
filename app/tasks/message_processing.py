@@ -218,17 +218,23 @@ FRAUD_PATTERNS = [
 
 # Phrases attempting to manipulate the price to 0 or get products for free
 PRICE_MANIPULATION_PATTERNS = [
-    # Uzbek
+    # Uzbek — free/0-price requests
     "tekinga ber", "tekin ber", "bepul ber", "tekinga bera", "tekin bera",
     "tekinga ol", "tekin ol", "bepul ol", "bepulga ber", "bepulga ol",
-    "tekinga", "bepulga",
+    "tekinga", "bepulga", "bepul qil",
     "0 ga ber", "0ga ber", "0 somga", "0somga", "nol somga", "nol ga ber",
+    "0 sum", "0 so'm", "nol so'm",
+    # Uzbek — price reduction requests
     "narxini tushir", "narxni tushir", "arzon qil", "arzonroq qil",
     "yarim narx", "yarim narxda", "chegirma ber", "chegirma qil",
+    "narxini kamaytir", "narxni kamaytir", "kam narxda ber",
+    "arzonga ber", "arzonroq ber", "ucuz ber",
+    # Uzbek — refusal to pay
     "haq tolamayman", "tolamayman", "pul bermayman", "pulni qaytaring",
     "aldadingiz", "firibgar", "sotib olmayman lekin",
     # Russian
     "бесплатно дай", "даром дай", "за 0", "скидку дай", "сделай дешевле",
+    "бесплатно", "даром", "за ноль",
 ]
 
 
@@ -789,6 +795,19 @@ async def _handle_dm_async(
                             "Har bir buyurtma uchun alohida to'lov talab etiladi 📸"
                         )
                         conv.funnel_stage = "payment"
+                    elif not pending_data.get("total_amount") or int(pending_data.get("total_amount") or 0) <= 0:
+                        # Hard block: never create a 0-price or missing-price order
+                        logger.warning("zero_price_order_blocked", conv_id=str(conv.id), pending=pending_data)
+                        await _send_fraud_alert(
+                            conv,
+                            "⚠️ 0 narxli yoki noaniq narxli buyurtma yaratishga urinish bloklandi!\n"
+                            f"Pending data: {pending_data}"
+                        )
+                        bot_reply = (
+                            "Buyurtmani yakunlash uchun avval mahsulot va narxini tasdiqlashimiz kerak.\n\n"
+                            "Qaysi mahsulotni olmoqchisiz va narxi qancha ekanligini tasdiqlang 🛍"
+                        )
+                        conv.funnel_stage = "closing"
                     else:
                         payment_method = "transfer" if has_image else "cash"
                         ticket = await _create_ticket_from_pending(

@@ -207,9 +207,6 @@ SUSPICIOUS_WORDS = [
     # Uzbek offensive/fraud
     "ot", "essa", "blyad", "xaromi", "harom", "jinni", "ahmoq", "tentak", "yot",
     "stupid", "idiot", "blyat", "suka", "pizda", "ebal", "nahuy", "huesos",
-    # Fraud/manipulation attempts (Uzbek)
-    "tekin ber", "bepul ber", "tekinga", "bepulga", "aldadingiz", "firibgar",
-    "sotib olmayman lekin", "haq tolamayman", "tolamayman", "pulni qaytaring",
     # Russian offensive
     "блять", "сука", "пизда", "хуй", "ебал", "нахуй", "блядь",
 ]
@@ -217,6 +214,21 @@ SUSPICIOUS_WORDS = [
 FRAUD_PATTERNS = [
     "to'lov qildim", "tolov qildim", "pul yubordim", "pul jo'natdim",
     "transfer qildim", "to'lab bo'ldim", "tolab boldim",
+]
+
+# Phrases attempting to manipulate the price to 0 or get products for free
+PRICE_MANIPULATION_PATTERNS = [
+    # Uzbek
+    "tekinga ber", "tekin ber", "bepul ber", "tekinga bera", "tekin bera",
+    "tekinga ol", "tekin ol", "bepul ol", "bepulga ber", "bepulga ol",
+    "tekinga", "bepulga",
+    "0 ga ber", "0ga ber", "0 somga", "0somga", "nol somga", "nol ga ber",
+    "narxini tushir", "narxni tushir", "arzon qil", "arzonroq qil",
+    "yarim narx", "yarim narxda", "chegirma ber", "chegirma qil",
+    "haq tolamayman", "tolamayman", "pul bermayman", "pulni qaytaring",
+    "aldadingiz", "firibgar", "sotib olmayman lekin",
+    # Russian
+    "бесплатно дай", "даром дай", "за 0", "скидку дай", "сделай дешевле",
 ]
 
 
@@ -245,6 +257,15 @@ def _check_suspicious(text: str) -> tuple[bool, str]:
     for pattern in FRAUD_PATTERNS:
         if pattern in text_lower:
             return True, f"To'lovsiz tasdiqlashga urinish: '{pattern}'"
+    return False, ""
+
+
+def _check_price_manipulation(text: str) -> tuple[bool, str]:
+    """Returns (is_manipulation, matched_pattern) if client is trying to get a free/discounted product."""
+    text_lower = text.lower()
+    for pattern in PRICE_MANIPULATION_PATTERNS:
+        if pattern in text_lower:
+            return True, pattern
     return False, ""
 
 
@@ -563,6 +584,40 @@ async def _handle_dm_async(
         )
         db.add(client_msg)
 
+        # Price manipulation detection — block immediately, do not call AI
+        is_price_manip, manip_pattern = _check_price_manipulation(message_text)
+        if is_price_manip:
+            logger.warning("price_manipulation_attempt", conv_id=str(conv.id), pattern=manip_pattern)
+            await _send_fraud_alert(
+                conv,
+                f"💰 NARX MANIPULYATSIYASI: Mijoz mahsulotni tekin yoki 0 narxda olishga urindi!\n"
+                f"Pattern: '{manip_pattern}'"
+            )
+            refusal = (
+                "Kechirasiz, mahsulotlar faqat belgilangan narxda sotiladi. "
+                "Narxni o'zgartirish yoki tekin berish imkoni yo'q 🙏\n\n"
+                "Agar savollaringiz bo'lsa, boshqa narsa so'rang 😊"
+            )
+            db.add(Message(
+                conversation_id=conv.id,
+                role="client",
+                content=message_text,
+                media_url=media_url,
+            ))
+            bot_msg = Message(
+                conversation_id=conv.id,
+                role="bot",
+                content=refusal,
+            )
+            db.add(bot_msg)
+            conv.message_count = (conv.message_count or 0) + 2
+            await db.commit()
+            try:
+                await instagram.send_dm(instagram_user_id, refusal)
+            except Exception as exc:
+                logger.error("instagram_send_failed", error=str(exc))
+            return
+
         # Suspicious content detection — alert operators but still process normally
         is_suspicious, suspicious_reason = _check_suspicious(message_text)
         if is_suspicious:
@@ -683,6 +738,15 @@ async def _handle_dm_async(
 
                 # Update pending ticket data
                 extracted = ai_result.get("extracted_data", {})
+                # Guard: reject AI-extracted total_amount of 0 — price manipulation defense
+                extracted_amount = extracted.get("total_amount")
+                if extracted_amount is not None and int(extracted_amount) <= 0:
+                    logger.warning(
+                        "ai_zero_price_rejected",
+                        conv_id=str(conv.id),
+                        extracted_amount=extracted_amount,
+                    )
+                    extracted["total_amount"] = None
                 if any(v is not None for v in extracted.values()):
                     await _update_pending_ticket(redis, str(conv.id), extracted)
 

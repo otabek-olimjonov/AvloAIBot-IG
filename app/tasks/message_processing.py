@@ -536,22 +536,28 @@ async def _handle_converted_conversation(
     conv: Conversation,
     instagram_user_id: str,
     message_text: str,
+    media_url: str | None = None,
 ) -> None:
     """Handle messages in already-converted (ordered) conversations.
-    Detects update requests for name/address/phone and updates the ticket."""
+    Saves client + bot messages to DB so the dashboard counts them correctly."""
     from sqlalchemy import select
     from app.models import Ticket
+
+    # Always persist the client message so dashboard counts this conversation
+    db.add(Message(conversation_id=conv.id, role="client", content=message_text, media_url=media_url))
 
     text_lower = message_text.lower()
     is_update_request = any(kw in text_lower for kw in UPDATE_KEYWORDS)
 
     if not is_update_request:
-        # Generic reply — remind them of options
         reply = (
             "✅ Buyurtmangiz qabul qilingan va jarayonda!\n\n"
             "📝 Manzil, ism yoki telefon o'zgartirish uchun yangi ma'lumotni yozing.\n"
             "🛍 Yangi buyurtma berish uchun: \"Yangi buyurtma bermoqchiman\" deb yozing."
         )
+        db.add(Message(conversation_id=conv.id, role="bot", content=reply))
+        conv.message_count = (conv.message_count or 0) + 2
+        await db.commit()
         try:
             await instagram.send_dm(instagram_user_id, reply)
         except Exception as exc:
@@ -566,6 +572,9 @@ async def _handle_converted_conversation(
 
     if not ticket:
         reply = "✅ Buyurtmangiz topilmadi. Iltimos operator bilan bog'laning."
+        db.add(Message(conversation_id=conv.id, role="bot", content=reply))
+        conv.message_count = (conv.message_count or 0) + 2
+        await db.commit()
         try:
             await instagram.send_dm(instagram_user_id, reply)
         except Exception as exc:
@@ -604,6 +613,9 @@ Only include fields the customer is explicitly changing. Use null for unchanged 
             "Yangilash uchun quyidagilarni yozing:\n"
             "• Yangi manzil\n• Yangi telefon raqam\n• Yangi ism"
         )
+        db.add(Message(conversation_id=conv.id, role="bot", content=reply))
+        conv.message_count = (conv.message_count or 0) + 2
+        await db.commit()
         try:
             await instagram.send_dm(instagram_user_id, reply)
         except Exception:
@@ -615,12 +627,23 @@ Only include fields the customer is explicitly changing. Use null for unchanged 
         if hasattr(ticket, field):
             setattr(ticket, field, value)
     ticket.updated_at = datetime.now(timezone.utc)
-    await db.commit()
-    await db.refresh(ticket)
 
     # Notify Telegram
     from app.services.telegram import edit_ticket_message, send_admin_alert
     changes_text = "\n".join(f"• {k.replace('client_', '').capitalize()}: {v}" for k, v in updated_fields.items())
+
+    # Confirm to client
+    changes_readable = "\n".join(f"✅ {k.replace('client_', '').capitalize()}: {v}" for k, v in updated_fields.items())
+    reply = (
+        f"✅ Buyurtmangiz ma'lumotlari yangilandi!\n\n"
+        f"{changes_readable}\n\n"
+        f"Agar boshqa o'zgarishlar bo'lsa — yozing 😊"
+    )
+    db.add(Message(conversation_id=conv.id, role="bot", content=reply))
+    conv.message_count = (conv.message_count or 0) + 2
+    await db.commit()
+    await db.refresh(ticket)
+
     await send_admin_alert(
         f"📝 BUYURTMA YANGILANDI\n\n"
         f"👤 @{conv.instagram_username or conv.instagram_user_id}\n"
@@ -633,13 +656,6 @@ Only include fields the customer is explicitly changing. Use null for unchanged 
         except Exception:
             pass
 
-    # Confirm to client
-    changes_readable = "\n".join(f"✅ {k.replace('client_', '').capitalize()}: {v}" for k, v in updated_fields.items())
-    reply = (
-        f"✅ Buyurtmangiz ma'lumotlari yangilandi!\n\n"
-        f"{changes_readable}\n\n"
-        f"Agar boshqa o'zgarishlar bo'lsa — yozing 😊"
-    )
     try:
         await instagram.send_dm(instagram_user_id, reply)
     except Exception as exc:
@@ -705,11 +721,11 @@ async def _handle_dm_async(
                     # Fall through to normal payment flow — conv is now active at payment stage
                 else:
                     # Ticket already paid or not found — fall through to normal update handler
-                    await _handle_converted_conversation(db, redis, conv, instagram_user_id, message_text)
+                    await _handle_converted_conversation(db, redis, conv, instagram_user_id, message_text, media_url)
                     return
             else:
                 # Client wants to update existing order details
-                await _handle_converted_conversation(db, redis, conv, instagram_user_id, message_text)
+                await _handle_converted_conversation(db, redis, conv, instagram_user_id, message_text, media_url)
                 return
 
         is_first_message = conv.message_count == 0

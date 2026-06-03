@@ -29,6 +29,8 @@ IMPORTANT RULES:
 - If screenshot is blurry or numbers unreadable, set confidence = "low"
 - If this is NOT a payment receipt (just a chat/photo), set confidence = "low" and amount = 0
 - Do NOT set amount_matches=true if the amount is lower than expected
+- status must be "successful" only if the transaction is 100% complete. If status shows "pending", "processing", "in progress", or similar — set status = "pending"
+- recipient_card_last4: extract ONLY the card number that RECEIVED the money (the destination card), not the sender
 
 Respond ONLY with valid JSON, no markdown:
 {{
@@ -101,8 +103,10 @@ def determine_payment_action(vision_result: dict) -> tuple[str, str]:
     amount = vision_result.get("amount", 0) or 0
     status = vision_result.get("status", "").lower()
 
-    # Reject if transaction is not successful
-    if status in ("failed", "cancelled", "rejected"):
+    # Reject if transaction status is not explicitly successful
+    # "pending"/"processing" means money NOT yet transferred — must not accept
+    if status in ("failed", "cancelled", "rejected", "pending", "processing",
+                  "в обработке", "в ожидании", "jarayonda", "kutilmoqda"):
         return "pending", "request_resend"
 
     # Reject if not a screenshot at all

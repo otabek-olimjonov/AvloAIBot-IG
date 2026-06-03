@@ -78,10 +78,12 @@ def _build_prompt(
     telegram_group_link: str | None = None,
 ) -> str:
     products_text = "\n".join(
-        f"- {p['name']}: {p['description'] or ''} | Narx: {p['price']:,} UZS"
+        f"- {p['name']}: {(p['description'] or '')[:120]} | Narx: {p['price']:,} UZS"
         + (f" | Rasm: {p['image_url']}" if p.get("image_url") else "")
         for p in products
     )
+    # Limit FAQ to top 6 items to keep prompt size small
+    faq_items = faq_items[:6]
 
     promotions_text = ""
     if promotions:
@@ -149,7 +151,13 @@ def _build_prompt(
 )
 async def _call_gemini_text(prompt: str) -> str:
     start = asyncio.get_event_loop().time()
-    response = await asyncio.to_thread(_model.generate_content, prompt)
+    # Disable thinking mode on gemini-2.5-flash — it adds latency for simple chat tasks
+    try:
+        gen_cfg = {"thinking_config": {"thinking_budget": 0}}
+        response = await asyncio.to_thread(_model.generate_content, prompt, generation_config=gen_cfg)
+    except Exception:
+        # Fallback if thinking_config not supported by this SDK version
+        response = await asyncio.to_thread(_model.generate_content, prompt)
     elapsed = asyncio.get_event_loop().time() - start
 
     usage = getattr(response, "usage_metadata", None)

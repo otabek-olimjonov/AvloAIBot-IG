@@ -314,6 +314,66 @@ def _check_price_manipulation(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+PAYMENT_INTENT_KEYWORDS = [
+    "tolov", "to'lov", "to'lamoqchi", "tolamoqchi", "tolay", "to'lay",
+    "pul yubor", "transfer", "to'lash", "tolash",
+    "payment", "pay", "chek yuboraman", "screenshot",
+    "karta raqam", "pul yuboray", "to'lab",
+    # Cyrillic
+    "оплатить", "оплата", "перевести", "скриншот чека",
+]
+
+
+def _is_payment_intent(text: str) -> bool:
+    t = text.lower()
+    return any(kw in t for kw in PAYMENT_INTENT_KEYWORDS)
+
+
+async def _restore_payment_context(
+    db: AsyncSession, redis, conv: Conversation
+) -> bool:
+    """
+    For a converted conversation with an unpaid ticket: restore Redis pending
+    data from the ticket and reactivate the conversation at payment stage.
+    Returns True if successfully restored so the caller can fall through to
+    the normal payment flow.
+    """
+    from app.models import Ticket as TicketModel
+    from sqlalchemy import select as _select
+
+    if not conv.ticket_id:
+        return False
+
+    result = await db.execute(_select(TicketModel).where(TicketModel.id == conv.ticket_id))
+    ticket = result.scalar_one_or_none()
+
+    if not ticket or ticket.payment_status == "confirmed":
+        return False  # already paid or not found
+
+    # Rebuild Redis pending data from the existing ticket
+    pending_data = {
+        k: v for k, v in {
+            "client_name": ticket.client_name,
+            "client_phone": ticket.client_phone,
+            "client_city": ticket.client_city,
+            "client_address": ticket.client_address,
+            "product_name": ticket.product_name,
+            "product_quantity": ticket.product_quantity,
+            "total_amount": ticket.total_amount,
+            "_payment_stage_entered": True,
+            "_existing_ticket_id": str(ticket.id),
+        }.items() if v is not None
+    }
+
+    key = PENDING_TICKET_KEY.format(conversation_id=str(conv.id))
+    await redis.set(key, json.dumps(pending_data), ex=86400 * 7)
+
+    # Reactivate conversation at payment stage
+    conv.status = "active"
+    conv.funnel_stage = "payment"
+    return True
+
+
 def _build_receipt_fingerprint(vision_result: dict) -> str | None:
     """
     Build a stable fingerprint for a payment receipt to detect reuse.
@@ -374,6 +434,31 @@ async def _create_ticket_from_pending(
     raw = await redis.get(key)
     data = json.loads(raw) if raw else {}
 
+    existing_ticket_id = data.get("_existing_ticket_id")
+
+    # If this is a returning payer for an EXISTING ticket — update it, don't create a new one
+    if existing_ticket_id:
+        from sqlalchemy import select as _sel
+        result = await db.execute(_sel(Ticket).where(Ticket.id == existing_ticket_id))
+        ticket = result.scalar_one_or_none()
+        if ticket:
+            ticket.payment_method = payment_method
+            ticket.payment_status = payment_status
+            if payment_screenshot_url:
+                ticket.payment_screenshot_url = payment_screenshot_url
+            if payment_transaction_id:
+                ticket.payment_transaction_id = payment_transaction_id
+            if payment_amount_verified:
+                ticket.payment_amount_verified = payment_amount_verified
+            ticket.updated_at = datetime.now(timezone.utc)
+            if notes:
+                ticket.notes = (ticket.notes or "") + f"\n{notes}"
+            conversation.status = "converted"
+            conversation.ended_at = datetime.utcnow()
+            await redis.delete(key)
+            return ticket
+
+    # New ticket
     ticket = Ticket(
         client_instagram=conversation.instagram_username or conversation.instagram_user_id,
         client_name=data.get("client_name"),
@@ -393,10 +478,9 @@ async def _create_ticket_from_pending(
     db.add(ticket)
     await db.flush()
 
-    # Link ticket to conversation
     conversation.ticket_id = ticket.id
     conversation.status = "converted"
-    conversation.ended_at = datetime.utcnow()  # naive UTC — DB is TIMESTAMP WITHOUT TIME ZONE
+    conversation.ended_at = datetime.utcnow()
 
     await redis.delete(key)
     return ticket
@@ -613,6 +697,16 @@ async def _handle_dm_async(
                 db.add(conv)
                 await db.flush()
                 # Fall through to normal AI processing below
+            elif has_image or _is_payment_intent(message_text):
+                # Client returning to pay for their existing unpaid order
+                restored = await _restore_payment_context(db, redis, conv)
+                if restored:
+                    logger.info("payment_context_restored", conv_id=str(conv.id), user=instagram_user_id)
+                    # Fall through to normal payment flow — conv is now active at payment stage
+                else:
+                    # Ticket already paid or not found — fall through to normal update handler
+                    await _handle_converted_conversation(db, redis, conv, instagram_user_id, message_text)
+                    return
             else:
                 # Client wants to update existing order details
                 await _handle_converted_conversation(db, redis, conv, instagram_user_id, message_text)
@@ -745,6 +839,33 @@ async def _handle_dm_async(
                         f"Chekda: {detected_amount:,} UZS. "
                         f"TXN: {payment_transaction_id or 'noma lum'}"
                     )
+
+                # ── Recipient card mismatch check ─────────────────────────────
+                # Verify screenshot's recipient card matches OUR card
+                recipient_last4 = (vision_result.get("recipient_card_last4") or "").strip()
+                if recipient_last4 and not reused_receipt:
+                    card_result = await db.execute(
+                        select(Setting.value).where(Setting.key == "payment_card_number")
+                    )
+                    our_card_num = (card_result.scalar_one_or_none() or "").replace(" ", "").replace("-", "")
+                    our_last4 = our_card_num[-4:] if len(our_card_num) >= 4 else ""
+                    if our_last4 and recipient_last4 != our_last4:
+                        logger.warning(
+                            "wrong_recipient_card",
+                            screenshot_card=recipient_last4,
+                            our_card=our_last4,
+                            conv_id=str(conv.id),
+                        )
+                        await _send_fraud_alert(
+                            conv,
+                            f"🚨 NOTO'G'RI KARTAGA O'TKAZMA!\n"
+                            f"Chekdagi oluvchi karta: **{recipient_last4}\n"
+                            f"Bizning karta oxirgi 4: {our_last4}\n"
+                            f"Ehtimol boshqa kartaga pul o'tkazilgan!"
+                        )
+                        bot_reply_hint = "request_resend"
+                        payment_status = "pending"
+
             except Exception as exc:
                 logger.error("vision_module_failed", error=str(exc))
                 bot_reply_hint = "request_resend"

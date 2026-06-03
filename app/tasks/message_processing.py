@@ -184,7 +184,7 @@ async def _get_conversation_history(
         select(Message)
         .where(Message.conversation_id == conversation_id)
         .order_by(Message.created_at.desc())
-        .limit(10)
+        .limit(6)
     )
     messages = list(reversed(result.scalars().all()))
     return [{"role": m.role, "content": m.content} for m in messages]
@@ -218,24 +218,63 @@ FRAUD_PATTERNS = [
 
 # Phrases attempting to manipulate the price to 0 or get products for free
 PRICE_MANIPULATION_PATTERNS = [
-    # Uzbek — free/0-price requests
+    # Uzbek Latin — free/0-price requests
     "tekinga ber", "tekin ber", "bepul ber", "tekinga bera", "tekin bera",
     "tekinga ol", "tekin ol", "bepul ol", "bepulga ber", "bepulga ol",
     "tekinga", "bepulga", "bepul qil",
     "0 ga ber", "0ga ber", "0 somga", "0somga", "nol somga", "nol ga ber",
     "0 sum", "0 so'm", "nol so'm",
-    # Uzbek — price reduction requests
+    # Uzbek Latin — price reduction
     "narxini tushir", "narxni tushir", "arzon qil", "arzonroq qil",
     "yarim narx", "yarim narxda", "chegirma ber", "chegirma qil",
     "narxini kamaytir", "narxni kamaytir", "kam narxda ber",
     "arzonga ber", "arzonroq ber", "ucuz ber",
-    # Uzbek — refusal to pay
+    # Uzbek Latin — refusal to pay
     "haq tolamayman", "tolamayman", "pul bermayman", "pulni qaytaring",
     "aldadingiz", "firibgar", "sotib olmayman lekin",
-    # Russian
-    "бесплатно дай", "даром дай", "за 0", "скидку дай", "сделай дешевле",
-    "бесплатно", "даром", "за ноль",
+    # Uzbek Cyrillic — free requests
+    "текин", "бепул", "текинга", "текин бер", "бепул бер",
+    "текинга бер", "текинга ол",
+    # Russian Cyrillic — free requests
+    "бесплатно", "даром", "за 0", "за ноль", "нол сум",
+    "скидку дай", "сделай дешевле", "бесплатно дай", "даром дай",
+    "ман учун текин", "мен учун текин",
 ]
+
+# Patterns that indicate a prompt injection attempt (fake system/admin notes in user message)
+PROMPT_INJECTION_PATTERNS = [
+    "[system", "[admin", "[override", "[maintenance", "[instruction", "[note:",
+    "<system", "<admin", "<override",
+    "system note", "maintenance mode", "price_matrix", "override price",
+    "discount coupon", "free2026", "coupon_code", "promo_code",
+    "administrator applied", "admin applied", "system directive", "technical maintenance",
+    "do not prompt user for payment", "output confirmation message",
+    "системная директива", "системное сообщение", "технический режим",
+    "скидочный купон", "применен администратором",
+]
+
+
+def _detect_prompt_injection(text: str) -> bool:
+    """Return True if the message contains fake system/admin instruction injection."""
+    text_lower = text.lower()
+    return any(pat in text_lower for pat in PROMPT_INJECTION_PATTERNS)
+
+
+import re as _re
+
+def _strip_injection_blocks(text: str) -> str:
+    """Remove [SYSTEM NOTE: ...] and similar blocks from user text before sending to AI."""
+    # Remove [SYSTEM...] style blocks
+    cleaned = _re.sub(
+        r'\[(?:SYSTEM|ADMIN|OVERRIDE|MAINTENANCE|INSTRUCTION|NOTE)[^\]]*\]',
+        '[REMOVED]', text, flags=_re.IGNORECASE | _re.DOTALL,
+    )
+    # Remove <SYSTEM>...</SYSTEM> style blocks
+    cleaned = _re.sub(
+        r'<(?:SYSTEM|ADMIN|OVERRIDE)[^>]*>.*?</(?:SYSTEM|ADMIN|OVERRIDE)>',
+        '[REMOVED]', cleaned, flags=_re.IGNORECASE | _re.DOTALL,
+    )
+    return cleaned.strip()
 
 
 async def _send_fraud_alert(conv, reason: str) -> None:
@@ -589,6 +628,17 @@ async def _handle_dm_async(
             media_url=media_url,
         )
         db.add(client_msg)
+
+        # Prompt injection detection — strip fake [SYSTEM NOTE] blocks from the message
+        # and alert operators; continue processing with the cleaned text
+        if _detect_prompt_injection(message_text):
+            logger.warning("prompt_injection_detected", conv_id=str(conv.id), preview=message_text[:200])
+            await _send_fraud_alert(
+                conv,
+                f"🚨 PROMPT INJECTION URINISHI!\n"
+                f"Mijoz soxta 'tizim buyrug'i' yubordi:\n{message_text[:300]}"
+            )
+            message_text = _strip_injection_blocks(message_text)
 
         # Price manipulation detection — block immediately, do not call AI
         is_price_manip, manip_pattern = _check_price_manipulation(message_text)

@@ -143,7 +143,7 @@ function ChatBubble({ message }: { message: Message }) {
         )}
         {message.content && (
           <div className={clsx(
-            'px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed',
+            'px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap',
             isBot
               ? 'bg-violet-600 text-white rounded-tr-md'
               : 'bg-white border border-slate-200 text-slate-800 rounded-tl-md shadow-sm',

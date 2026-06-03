@@ -53,6 +53,14 @@ PERSONALITY RULES — make every reply feel alive, not robotic:
 - Show genuine excitement about the products — their benefits, quality, natural ingredients.
 - Keep replies concise — max 5-6 lines. No long walls of text.
 - Vary your sentence starters so replies don't all sound the same.
+- ORDER SUMMARY FORMAT: When confirming or summarizing collected order details (closing/payment stage), ALWAYS format as a structured list with emojis and newlines — NEVER write everything in one long sentence. Use this structure:
+  ✅ Buyurtma ma'lumotlari:
+  📦 Mahsulot: [product] x[qty]
+  💰 Narx: [amount] UZS
+  👤 Ism: [name]
+  📞 Telefon: [phone]
+  📍 Shahar: [city]
+  🏠 Manzil: [address]
 """
 
 
@@ -76,6 +84,7 @@ def _build_prompt(
     current_message_has_image: bool = False,
     payment_hint: str | None = None,
     telegram_group_link: str | None = None,
+    pending_order_summary: str | None = None,
 ) -> str:
     products_text = "\n".join(
         f"- {p['name']}: {(p['description'] or '')[:120]} | Narx: {p['price']:,} UZS"
@@ -108,6 +117,11 @@ def _build_prompt(
         for m in history
     )
 
+    order_note = (
+        f"\n\n## Joriy buyurtma holati (MUHIM — bu ma'lumotlarni unutma)\n{pending_order_summary}"
+        if pending_order_summary
+        else ""
+    )
     image_note = "\n[Mijoz bu xabar bilan rasm yubordi.]" if current_message_has_image else ""
     payment_hint_note = (
         f"\n\n## To'lov tekshiruvi natijasi\n{PAYMENT_HINT_TEXT[payment_hint]}"
@@ -131,7 +145,7 @@ def _build_prompt(
 
 ## Ko'p so'raladigan savollar (FAQ)
 {faq_text}
-{tg_note}
+{tg_note}{order_note}
 
 ## Suhbat tarixi
 {history_text}
@@ -203,6 +217,7 @@ async def generate_sales_response(
     current_message_has_image: bool = False,
     payment_hint: str | None = None,
     telegram_group_link: str | None = None,
+    pending_order_summary: str | None = None,
 ) -> dict:
     """
     Call Gemini and return a parsed response dict with keys:
@@ -219,6 +234,7 @@ async def generate_sales_response(
         current_message_has_image=current_message_has_image,
         payment_hint=payment_hint,
         telegram_group_link=telegram_group_link,
+        pending_order_summary=pending_order_summary,
     )
 
     raw = await _call_gemini_text(prompt)

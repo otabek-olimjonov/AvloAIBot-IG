@@ -184,7 +184,7 @@ async def _get_conversation_history(
         select(Message)
         .where(Message.conversation_id == conversation_id)
         .order_by(Message.created_at.desc())
-        .limit(6)
+        .limit(10)
     )
     messages = list(reversed(result.scalars().all()))
     return [{"role": m.role, "content": m.content} for m in messages]
@@ -764,18 +764,8 @@ async def _handle_dm_async(
                 "Narxni o'zgartirish yoki tekin berish imkoni yo'q 🙏\n\n"
                 "Agar savollaringiz bo'lsa, boshqa narsa so'rang 😊"
             )
-            db.add(Message(
-                conversation_id=conv.id,
-                role="client",
-                content=message_text,
-                media_url=media_url,
-            ))
-            bot_msg = Message(
-                conversation_id=conv.id,
-                role="bot",
-                content=refusal,
-            )
-            db.add(bot_msg)
+            # client_msg already added above — only add the bot reply
+            db.add(Message(conversation_id=conv.id, role="bot", content=refusal))
             conv.message_count = (conv.message_count or 0) + 2
             await db.commit()
             try:
@@ -795,6 +785,27 @@ async def _handle_dm_async(
 
         system_prompt = context["prompts"].get("system", "You are a helpful sales assistant.")
         sales_script = context["prompts"].get(conv.funnel_stage, "")
+
+        # Fetch current pending order so AI never forgets what was collected
+        _pending_raw = await redis.get(PENDING_TICKET_KEY.format(conversation_id=str(conv.id)))
+        _pending_for_ai = json.loads(_pending_raw) if _pending_raw else {}
+        pending_order_summary: str | None = None
+        _order_fields = {
+            "product_name": "Mahsulot",
+            "product_quantity": "Miqdor",
+            "total_amount": "Narx",
+            "client_name": "Ism",
+            "client_phone": "Telefon",
+            "client_city": "Shahar",
+            "client_address": "Manzil",
+        }
+        _order_lines = [
+            f"{label}: {_pending_for_ai[key]}"
+            for key, label in _order_fields.items()
+            if _pending_for_ai.get(key) is not None
+        ]
+        if _order_lines:
+            pending_order_summary = "\n".join(_order_lines)
         has_image = bool(media_url)
 
         # Vision module: if in payment stage and image sent
@@ -914,6 +925,7 @@ async def _handle_dm_async(
                     current_message_has_image=has_image,
                     payment_hint=bot_reply_hint,
                     telegram_group_link=context.get("telegram_group_link"),
+                    pending_order_summary=pending_order_summary,
                 )
                 bot_reply = ai_result["reply"]
 

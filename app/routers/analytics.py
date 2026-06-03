@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, func, cast, Date, text, distinct
+from sqlalchemy import select, func, cast, Date, text, distinct, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -65,14 +65,19 @@ async def dashboard(
     tz = await _get_business_tz(db)
     today_start, today_end = _today_bounds_naive_utc(tz)
 
-    # Today's conversations — count distinct conversations that had any message activity today
-    # (not just ones that started today, so reactivated conversations are included)
-    conv_result = await db.execute(
-        select(func.count(distinct(Message.conversation_id))).where(
-            Message.created_at >= today_start,
-            Message.created_at <= today_end,
-        )
+    # Today's conversations — union of:
+    # 1. conversations that started today (even if no message saved yet)
+    # 2. conversations that had any message activity today (reactivated old conversations)
+    new_today_q = select(Conversation.id.label("cid")).where(
+        Conversation.started_at >= today_start,
+        Conversation.started_at <= today_end,
     )
+    active_today_q = select(Message.conversation_id.label("cid")).where(
+        Message.created_at >= today_start,
+        Message.created_at <= today_end,
+    )
+    combined_subq = union(new_today_q, active_today_q).subquery()
+    conv_result = await db.execute(select(func.count()).select_from(combined_subq))
     today_conversations = conv_result.scalar_one()
 
     # Today's orders (tickets created today)

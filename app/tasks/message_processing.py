@@ -325,12 +325,24 @@ PAYMENT_INTENT_KEYWORDS = [
 
 # Keywords that indicate client will pay CASH on delivery (no screenshot expected)
 CASH_PAYMENT_KEYWORDS = [
-    "naqd", "naxt", "naqt", "cash",
-    "yetkazib beruvchi", "yetkazuvchi", "kuryer", "kurer", "kurér",
-    "dastavka", "dastafka", "dastavkachi", "dostavka",
-    "qo'lma-qol", "qolma qol", "qoʻlma-qoʻl",
-    "pochta", "topshirganda", "olganda to'lay", "olganda",
-    "нал", "наличными", "наличка", "курьер наличными", "при доставке",
+    # Uzbek Latin — cash/naqd variants
+    "naqd", "naxt", "naqt", "nakd", "naqd pul", "naxt pul",
+    # Uzbek Latin — delivery/courier
+    "yetkazib beruvchi", "yetkazuvchi", "kuryer", "kurer", "kurер",
+    "dastavka", "dastafka", "dastavkachi", "dostavka", "dastafkachi",
+    "yetkazib", "yetkazuvchiga", "yetkazib beruvchiga",
+    # Uzbek Latin — "when I receive/get it"
+    "qo'lma-qol", "qolma qol", "olganda", "olganida", "olganimda",
+    "qabul qilganda", "qabul qilganida", "topshirganda", "topshirganida",
+    "kelganda", "yetib kelganda",
+    "olganda to'lay", "olganda beraman", "olganda to'layman",
+    "cash", "pochta",
+    # Uzbek Cyrillic — cash
+    "нақд", "нақт", "накд",
+    # Russian — cash/delivery
+    "нал", "наличными", "наличка", "нал оплата",
+    "курьер наличными", "при доставке", "при получении",
+    "курьер", "наложенным",
 ]
 
 
@@ -992,7 +1004,11 @@ async def _handle_dm_async(
                     pending_data = json.loads(pending_raw) if pending_raw else {}
                     payment_was_in_flow = pending_data.get("_payment_stage_entered", False)
 
-                    is_cash_order = _is_cash_payment(message_text)
+                    # Cash detection: keyword match on current message OR AI extracted payment_method
+                    is_cash_order = (
+                        _is_cash_payment(message_text)
+                        or pending_data.get("payment_method") == "cash"
+                    )
                     if payment_was_in_flow and not has_image and payment_status != "confirmed" and not is_cash_order:
                         # Someone tried to text-claim payment without sending a screenshot
                         logger.warning("fraud_attempt_text_payment_claim", conv_id=str(conv.id))
@@ -1025,7 +1041,11 @@ async def _handle_dm_async(
                         )
                         conv.funnel_stage = "closing"
                     else:
-                        payment_method = "transfer" if has_image else "cash"
+                        # Use AI-detected payment_method if available, else infer from image
+                        payment_method = (
+                            pending_data.get("payment_method")
+                            or ("transfer" if has_image else "cash")
+                        )
                         ticket = await _create_ticket_from_pending(
                             db=db,
                             redis=redis,

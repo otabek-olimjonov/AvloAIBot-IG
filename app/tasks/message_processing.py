@@ -323,10 +323,26 @@ PAYMENT_INTENT_KEYWORDS = [
     "оплатить", "оплата", "перевести", "скриншот чека",
 ]
 
+# Keywords that indicate client will pay CASH on delivery (no screenshot expected)
+CASH_PAYMENT_KEYWORDS = [
+    "naqd", "naxt", "naqt", "cash",
+    "yetkazib beruvchi", "yetkazuvchi", "kuryer", "kurer", "kurér",
+    "dastavka", "dastafka", "dastavkachi", "dostavka",
+    "qo'lma-qol", "qolma qol", "qoʻlma-qoʻl",
+    "pochta", "topshirganda", "olganda to'lay", "olganda",
+    "нал", "наличными", "наличка", "курьер наличными", "при доставке",
+]
+
 
 def _is_payment_intent(text: str) -> bool:
     t = text.lower()
     return any(kw in t for kw in PAYMENT_INTENT_KEYWORDS)
+
+
+def _is_cash_payment(text: str) -> bool:
+    """Return True if client is clearly confirming cash-on-delivery payment."""
+    t = text.lower()
+    return any(kw in t for kw in CASH_PAYMENT_KEYWORDS)
 
 
 async def _restore_payment_context(
@@ -976,7 +992,8 @@ async def _handle_dm_async(
                     pending_data = json.loads(pending_raw) if pending_raw else {}
                     payment_was_in_flow = pending_data.get("_payment_stage_entered", False)
 
-                    if payment_was_in_flow and not has_image and payment_status != "confirmed":
+                    is_cash_order = _is_cash_payment(message_text)
+                    if payment_was_in_flow and not has_image and payment_status != "confirmed" and not is_cash_order:
                         # Someone tried to text-claim payment without sending a screenshot
                         logger.warning("fraud_attempt_text_payment_claim", conv_id=str(conv.id))
                         await _send_fraud_alert(conv, "Mijoz to'lov qilmay 'to'lov qildim' deb so'z bilan buyurtmani tasdiqlashga urindi!")

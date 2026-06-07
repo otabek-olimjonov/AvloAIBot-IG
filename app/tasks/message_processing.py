@@ -338,11 +338,17 @@ CASH_PAYMENT_KEYWORDS = [
     "olganda to'lay", "olganda beraman", "olganda to'layman",
     "cash", "pochta",
     # Uzbek Cyrillic — cash
-    "нақд", "нақт", "накд",
+    "нақд", "нақт", "накд", "нақд пул",
+    # Uzbek Cyrillic — courier/delivery (the most common cash phrases in Cyrillic Uzbek)
+    "курерга", "куrerга", "курерга", "курьерга",
+    "курер", "курьер",
+    "етказиб", "етказувчи", "юборувчига",
+    "олганда", "олганимда", "қабул", "топширганда",
+    "қўлма-қўл", "қўлда",
     # Russian — cash/delivery
     "нал", "наличными", "наличка", "нал оплата",
     "курьер наличными", "при доставке", "при получении",
-    "курьер", "наложенным",
+    "наложенным",
 ]
 
 

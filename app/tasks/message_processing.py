@@ -1052,6 +1052,8 @@ async def _handle_dm_async(
                             pending_data.get("payment_method")
                             or ("transfer" if has_image else "cash")
                         )
+                        # Check if this is an update to an existing ticket (returning payer)
+                        is_existing_ticket = bool(pending_data.get("_existing_ticket_id"))
                         ticket = await _create_ticket_from_pending(
                             db=db,
                             redis=redis,
@@ -1068,9 +1070,14 @@ async def _handle_dm_async(
                         if vision_result:
                             owner_label = conv.instagram_username or conv.instagram_user_id
                             await _register_receipt(redis, vision_result, owner_label)
-                        # Send ticket to Telegram (outside transaction)
+                        # Send or edit Telegram ticket (outside transaction)
+                        # Existing ticket already has a Telegram message — edit it, don't send a duplicate
                         try:
-                            await send_order_ticket(ticket)
+                            if is_existing_ticket and ticket.telegram_message_id:
+                                from app.services.telegram import edit_ticket_message
+                                await edit_ticket_message(ticket.telegram_message_id, ticket)
+                            else:
+                                await send_order_ticket(ticket)
                         except Exception as exc:
                             logger.error("telegram_ticket_send_failed", error=str(exc))
 

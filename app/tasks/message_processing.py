@@ -193,14 +193,32 @@ async def _get_conversation_history(
 async def _get_payment_card_info(db: AsyncSession) -> str:
     result = await db.execute(
         select(Setting).where(
-            Setting.key.in_(["payment_card_number", "payment_card_owner", "payment_bank"])
+            Setting.key.in_([
+                "payment_card_number", "payment_card_owner", "payment_bank", "payment_link"
+            ])
         )
     )
     settings_map = {s.key: s.value for s in result.scalars().all()}
     card_num = settings_map.get("payment_card_number", "")
     card_owner = settings_map.get("payment_card_owner", "")
     bank = settings_map.get("payment_bank", "")
-    return f"Karta: {card_num} | Egasi: {card_owner} | Bank: {bank}"
+    payment_link = (settings_map.get("payment_link") or "").strip()
+
+    lines = []
+    if card_num:
+        lines.append(f"💳 Karta: {card_num}")
+    if card_owner:
+        lines.append(f"👤 Egasi: {card_owner}")
+    if bank:
+        lines.append(f"🏦 Bank: {bank}")
+    if payment_link:
+        lines.append(f"\n🔗 Online to'lash (Click / Payme):\n{payment_link}")
+
+    if not lines:
+        return ""
+
+    header = "💰 To'lov ma'lumotlari:"
+    return header + "\n" + "\n".join(lines)
 
 
 SUSPICIOUS_WORDS = [

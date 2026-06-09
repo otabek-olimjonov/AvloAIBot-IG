@@ -149,6 +149,7 @@ DEFAULT_SETTINGS = {
     "payment_card_number": "",
     "payment_card_owner": "",
     "payment_bank": "",
+    "payment_link": "",  # Click / Payme to'lov havolasi (ixtiyoriy)
     "telegram_bot_token": "",
     "telegram_group_id": "",
     "instagram_page_id": "",

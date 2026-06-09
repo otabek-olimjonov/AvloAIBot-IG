@@ -131,7 +131,23 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - /var/www/certbot:/var/www/certbot:ro
-      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - letsencrypt_data:/etc/letsencrypt
+    # Generate self-signed certs if real Let's Encrypt certs are absent (local dev)
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        apk add --no-cache openssl >/dev/null 2>&1 || true
+        LE=/etc/letsencrypt
+        DOMAIN=beekeeper.uz
+        mkdir -p $$LE/live/$$DOMAIN
+        if [ ! -f $$LE/options-ssl-nginx.conf ]; then
+          printf 'ssl_protocols TLSv1.2 TLSv1.3;\nssl_prefer_server_ciphers off;\n' > $$LE/options-ssl-nginx.conf
+        fi
+        if [ ! -f $$LE/live/$$DOMAIN/fullchain.pem ]; then
+          openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout $$LE/live/$$DOMAIN/privkey.pem -out $$LE/live/$$DOMAIN/fullchain.pem -subj "/CN=$$DOMAIN" 2>/dev/null
+        fi
+        exec nginx -g 'daemon off;'
     depends_on:
       - app
       - frontend
@@ -141,6 +157,7 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  letsencrypt_data:
 
 networks:
   botnet:

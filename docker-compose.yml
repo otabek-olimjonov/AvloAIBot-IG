@@ -131,7 +131,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - /var/www/certbot:/var/www/certbot:ro
-      - letsencrypt_data:/etc/letsencrypt
+      - /etc/letsencrypt:/etc/letsencrypt
     # Generate self-signed certs if real Let's Encrypt certs are absent (local dev)
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -157,7 +157,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  letsencrypt_data:
 
 networks:
   botnet:

@@ -1112,6 +1112,16 @@ async def _handle_dm_async(
                                 await send_order_ticket(ticket)
                         except Exception as exc:
                             logger.error("telegram_ticket_send_failed", error=str(exc))
+                            # Try to alert even if main send failed — operators must know
+                            try:
+                                from app.services.telegram import send_admin_alert
+                                await send_admin_alert(
+                                    f"❌ Buyurtma #{ticket.ticket_number:05d} Telegram guruhiga YUBORILMADI!\n"
+                                    f"Xato: {exc}\n"
+                                    f"Mijoz: {ticket.client_instagram}"
+                                )
+                            except Exception:
+                                pass
 
             except Exception as exc:
                 logger.error("ai_engine_failed", error=str(exc), exc_info=True)

@@ -96,9 +96,9 @@ STAGE_PROMPTS = [
         "type": "greeting",
         "content": (
             "HOZIRGI BOSQICH: SALOM (1-bosqich)\n"
-            "- Samimiy salomlashing, ismingiz Laylo ekanini ayting.\n"
-            "- Mijozning ismini so'rang.\n"
-            "- 'Sizga eng mos variantni topishga yordam beraman, bir necha savol bersam maylimi?' deng.\n"
+            "- Samimiy, iliq salomlash. Ismingiz Laylo ekanini ayting.\n"
+            "- Yostiqlarimizga qiziqqanlari uchun minnatdorchilik bildiring.\n"
+            "- FAQAT bitta savol bering: mijozning ismini so'rang.\n"
             "- Narx aytmang, mahsulot taqdim etmang — hali erta.\n"
             "- Mijozga FAQAT Siz shaklida murojaat qiling."
         ),
@@ -189,9 +189,10 @@ async def update():
                 "Men Laylo — sizga eng mos variantni topishga yordam beraman. Shunchaki yozing! 😊"
             ),
             "dm_greeting_message": (
-                "Assalomu alaykum! 👋 Lavanda yostiq do'koniga xush kelibsiz.\n"
-                "Men Laylo — sizning shaxsiy konsultantingizman 🌸\n"
-                "Ismingiz nima? Sizga eng mos mahsulotni topishga yordam beraman 😊"
+                "Va alaykum assalom! 👋 Mening ismim Laylo. "
+                "Men Lavanda yostiq brendining professional konsultantiman 🌸\n"
+                "Bizning yostiqlarimizga qiziqqaningiz uchun rahmat!\n"
+                "Iltimos, ismingizni aytib yuborasizmi? 😊"
             ),
             "comment_reply_message": (
                 "Salom, {name}! 😊 DM ga yozib qoldingiz — tez orada javob beramiz! 🌿"

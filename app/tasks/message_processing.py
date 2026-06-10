@@ -1026,6 +1026,20 @@ async def _handle_dm_async(
                     # If the client never sent an image (just text-claimed payment), block completion.
                     pending_raw = await redis.get(PENDING_TICKET_KEY.format(conversation_id=str(conv.id)))
                     pending_data = json.loads(pending_raw) if pending_raw else {}
+
+                    # If total_amount is missing, infer it from the product catalog using product_name
+                    if not pending_data.get("total_amount") or int(pending_data.get("total_amount") or 0) <= 0:
+                        product_name_key = (pending_data.get("product_name") or "").strip().lower()
+                        if product_name_key:
+                            for _p in context["products"]:
+                                if _p["name"].lower() in product_name_key or product_name_key in _p["name"].lower():
+                                    _qty = max(int(pending_data.get("product_quantity") or 1), 1)
+                                    _inferred = int(_p["price"]) * _qty
+                                    pending_data["total_amount"] = _inferred
+                                    await _update_pending_ticket(redis, str(conv.id), {"total_amount": _inferred})
+                                    logger.info("total_amount_inferred", amount=_inferred, product=_p["name"], qty=_qty)
+                                    break
+
                     payment_was_in_flow = pending_data.get("_payment_stage_entered", False)
 
                     # Cash detection: keyword match on current message OR AI extracted payment_method
@@ -1052,7 +1066,7 @@ async def _handle_dm_async(
                         )
                         conv.funnel_stage = "payment"
                     elif not pending_data.get("total_amount") or int(pending_data.get("total_amount") or 0) <= 0:
-                        # Hard block: never create a 0-price or missing-price order
+                        # Hard block: price genuinely unknown
                         logger.warning("zero_price_order_blocked", conv_id=str(conv.id), pending=pending_data)
                         await _send_fraud_alert(
                             conv,

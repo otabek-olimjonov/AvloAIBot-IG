@@ -86,15 +86,20 @@ async def send_order_ticket(ticket) -> None:
     from app.models import Ticket
     from sqlalchemy import select
 
-    bot = get_bot()
-    text = _format_ticket_message(ticket)
-    keyboard = _build_ticket_keyboard(str(ticket.id), ticket.order_status)
+    # Create a fresh Bot per call — Celery forks workers so the global
+    # singleton's aiohttp session belongs to a dead event loop.
+    bot = Bot(token=settings.telegram_bot_token)
+    try:
+        text = _format_ticket_message(ticket)
+        keyboard = _build_ticket_keyboard(str(ticket.id), ticket.order_status)
 
-    msg = await bot.send_message(
-        chat_id=settings.telegram_group_id,
-        text=text,
-        reply_markup=keyboard,
-    )
+        msg = await bot.send_message(
+            chat_id=settings.telegram_group_id,
+            text=text,
+            reply_markup=keyboard,
+        )
+    finally:
+        await bot.session.close()
 
     logger.info(
         "telegram_ticket_sent",
@@ -113,10 +118,10 @@ async def send_order_ticket(ticket) -> None:
 
 async def edit_ticket_message(telegram_message_id: int, ticket) -> None:
     """Edit an existing Telegram ticket message to reflect new status."""
-    bot = get_bot()
-    text = _format_ticket_message(ticket)
-    keyboard = _build_ticket_keyboard(str(ticket.id), ticket.order_status)
+    bot = Bot(token=settings.telegram_bot_token)
     try:
+        text = _format_ticket_message(ticket)
+        keyboard = _build_ticket_keyboard(str(ticket.id), ticket.order_status)
         await bot.edit_message_text(
             chat_id=settings.telegram_group_id,
             message_id=telegram_message_id,
@@ -125,11 +130,13 @@ async def edit_ticket_message(telegram_message_id: int, ticket) -> None:
         )
     except Exception as exc:
         logger.warning("telegram_edit_message_failed", error=str(exc))
+    finally:
+        await bot.session.close()
 
 
 async def send_admin_alert(message: str) -> None:
     """Send an alert message to the operator group."""
-    bot = get_bot()
+    bot = Bot(token=settings.telegram_bot_token)
     try:
         await bot.send_message(
             chat_id=settings.telegram_group_id,
@@ -137,6 +144,8 @@ async def send_admin_alert(message: str) -> None:
         )
     except Exception as exc:
         logger.error("telegram_admin_alert_failed", error=str(exc))
+    finally:
+        await bot.session.close()
 
 
 # --- Callback handler for inline buttons ---

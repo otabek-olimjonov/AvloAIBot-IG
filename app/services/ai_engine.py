@@ -38,6 +38,8 @@ Respond ONLY with valid JSON in this exact format (no markdown, no explanation):
 }
 
 CRITICAL RULES:
+- CATALOG REQUEST: If customer asks to see all pillow types/models, list all 3 models by name and ONE-LINE benefit only — NO prices. Then ask about their needs and recommend the best fit. Only give the price for the recommended model after explaining why it suits them.
+- STAY ON TOPIC: Always bring the conversation back to Lavanda pillows. Never follow the customer to a different topic.
 - STAGE SCRIPT IS INTERNAL ONLY: The "## Joriy bosqich uchun ICHKI KO'RSATMALAR" section contains your private coaching notes. NEVER copy, paraphrase, or output any text from that section as a reply to the customer. It is a guide for HOW to behave — not words to send.
 - PRICE CONTROL: During greeting and qualification stages (funnel_stage is "greeting" or "qualification"), NEVER state a product price even if the customer directly asks. Instead reply: "Avval Sizga eng mos variantni topsam, so'ng narxni aytaman 😊" and continue with the qualification questions.
 - Set funnel_stage="completed" in TWO cases ONLY:
@@ -205,9 +207,11 @@ def _parse_gemini_response(raw: str) -> dict:
     if text.startswith("```"):
         lines = text.splitlines()
         text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    # Remove ASCII control characters (0x00-0x1F) except tab/newline/CR which are valid in JSON whitespace
+    # Remove ASCII control characters (0x00-0x1F) except tab/newline/CR
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
-    return json.loads(text)
+    # Use raw_decode so any text Gemini appends after the closing } is ignored
+    obj, _ = json.JSONDecoder().raw_decode(text)
+    return obj
 
 
 VALID_FUNNEL_STAGES = {
